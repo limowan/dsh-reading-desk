@@ -722,9 +722,13 @@ body[data-theme="bookstore"]{--sheet:#efe6d2;--sheet-edge:#d9cfb9}
 .assist.on{transform:none}
 .as-head{display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
 .as-head b{font-size:14px;letter-spacing:.06em}
-.as-head .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);margin-left:8px}
+.as-head .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);margin-left:8px;transition:background .2s}
+.as-head .dot.on{background:#3aa55c;box-shadow:0 0 0 2px rgba(58,165,92,.18)}
+.as-head .dot.off{background:#c0392b}
 .as-head .model{font-size:11px;color:var(--soft);margin-left:7px;font-family:var(--mono)}
 .as-head .pend{margin-left:8px;font-size:10px;color:var(--soft);border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+.as-head .pend.on{color:#2f8a4c;border-color:rgba(58,165,92,.45);background:rgba(58,165,92,.08)}
+.as-head .pend.off{color:#b0362a;border-color:rgba(192,57,43,.35)}
 .as-acts{margin-left:auto;display:flex;align-items:center;gap:2px}
 .as-act{border:0;background:none;cursor:pointer;color:var(--soft);font-size:18px;padding:4px 9px;border-radius:8px}
 .as-act:hover{background:var(--chip);color:var(--ink)}
@@ -1348,7 +1352,7 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
 <div class="mask" id="mask"></div>
 <aside class="assist" id="assist" aria-label="读书助手">
   <div class="as-head">
-    <b>读书助手</b><span class="dot"></span><span class="pend" id="asModel">连接中…</span>
+    <b>读书助手</b><span class="dot" id="asDot"></span><span class="pend" id="asModel">连接中…</span>
     <div class="as-acts">
       <button class="as-note" id="asNote">记成笔记</button>
       <button class="as-act" id="asClose" aria-label="关闭">×</button>
@@ -2566,6 +2570,7 @@ async function aiOneLiner(stats) {
 /* ---- 面板顶部显示真实模型（宿主 /ai/model） ---- */
 async function loadModelBadge() {
   const targets = [$("#asModel"), $("#pModel")].filter(Boolean);
+  const dot = $("#asDot");
   try {
     const res = await fetch(AI_BASE + "/model", { headers: { "accept": "application/json" } });
     const j = await res.json();
@@ -2574,13 +2579,22 @@ async function loadModelBadge() {
       targets.forEach(el => {
         el.textContent = name;
         el.classList.add("on");
+        el.classList.remove("off");
         el.title = `${j.provider} · ${name}`;
       });
+      if (dot) { dot.classList.add("on"); dot.classList.remove("off"); dot.title = "已连接 AI"; }
       return;
     }
-    targets.forEach(el => { el.textContent = j?.reason ? "未就绪" : "未接入"; el.title = j?.reason || ""; el.classList.remove("on"); });
+    targets.forEach(el => {
+      el.textContent = j?.reason ? "未就绪" : "未接入";
+      el.title = j?.reason || "";
+      el.classList.remove("on");
+      el.classList.add("off");
+    });
+    if (dot) { dot.classList.add("off"); dot.classList.remove("on"); dot.title = j?.reason || "AI 不可用"; }
   } catch (e) {
-    targets.forEach(el => { el.textContent = "未接入"; });
+    targets.forEach(el => { el.textContent = "未接入"; el.classList.remove("on"); el.classList.add("off"); });
+    if (dot) { dot.classList.add("off"); dot.title = "无法连接宿主"; }
   }
 }
 loadModelBadge();
