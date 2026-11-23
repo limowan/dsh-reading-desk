@@ -489,6 +489,12 @@ body[data-theme="bookstore"]{--sheet:#efe6d2;--sheet-edge:#d9cfb9}
 .nlist{display:flex;flex-direction:column;gap:14px}
 .nitem{border-left:3px solid var(--accent);padding:4px 0 4px 16px;animation:rise .5s var(--ease)}
 .nitem p{font-size:14px;line-height:1.85;white-space:pre-wrap}
+.nraw{font-size:13px;line-height:1.85;white-space:pre-wrap;color:var(--soft);
+  border-left:1px solid var(--line);padding-left:12px;margin-bottom:12px;max-height:260px;overflow:auto}
+.nraw .lab{display:block;margin-bottom:6px;font-size:10px;letter-spacing:.16em;color:var(--faint)}
+.nsum{font-size:14px;line-height:1.9;white-space:pre-wrap}
+.nsum .lab{display:inline-block;margin-right:8px;font-size:10px;letter-spacing:.14em;
+  color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:1px 8px;vertical-align:2px}
 .nitem .m{margin-top:8px;font-size:11px;color:var(--faint);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .synctag,.schip{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--faint);white-space:nowrap}
 .schip.on{color:var(--accent);border-color:var(--accent)}
@@ -2637,20 +2643,22 @@ $("#asNote").onclick = async () => {
   if (!mine.length) { toast("先输入内容"); return; }
   if (t.savedMe === mine.length) { toast("已记过笔记"); return; }
   const realMsgs = t.msgs.filter(m => !m.placeholder);
-  const fallback = realMsgs.every(m => m.who === "me")
+  /* 原文照抄，作为笔记底稿 */
+  const raw = realMsgs.every(m => m.who === "me")
     ? realMsgs.map(m => m.text).join("\n")
     : realMsgs.map(m => (m.who === "me" ? "问：" : "答：") + m.text).join("\n");
   toast("正在整理…");
-  let text = fallback;
+  let summary = "";
   try {
     const res = await fetch(AI_BASE + "/summarize", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ book: { title: asBook.title }, msgs: realMsgs }),
     });
     const j = await res.json();
-    if (res.ok && j.text) text = j.text;
+    if (res.ok && j.text) summary = j.text;
   } catch (e) {}
-  noteList.unshift({ id: String(Date.now()), bookId: asBook.bookId, title: asBook.title, text, at: Date.now() });
+  noteList.unshift({ id: String(Date.now()), bookId: asBook.bookId, title: asBook.title,
+                     text: raw, summary, at: Date.now() });
   t.savedMe = mine.length;
   saveNotes(); renderTalkPage();
   toast("已记成笔记 · 本机");
@@ -2660,10 +2668,18 @@ function renderTalkPage() {
   const ids = Object.keys(threads).filter(k => threads[k].msgs.length > 0);
   $("#noteCount").textContent = noteList.length ? `${noteList.length} 条` : "";
   $("#noteList").innerHTML = noteList.length
-    ? noteList.map(n => `<div class="nitem"><p>${esc(n.text)}</p>
-        <div class="m"><span>《${esc(n.title)}》</span><span>${new Date(n.at).toLocaleString("zh-CN", { hour12: false })}</span>
-        ${ids.includes(n.bookId) ? `<button class="btn sm" data-open="${esc(n.bookId)}">继续对话</button>` : ""}
-        <span class="synctag">仅本机</span></div></div>`).join("")
+    ? noteList.map(n => {
+        const legacy = !n.summary;
+        const rawBlock = `<div class="nraw"><span class="lab">讨论原文</span>${esc(n.text)}</div>`;
+        const sumBlock = n.summary ? `<div class="nsum"><span class="lab">摘要</span>${esc(n.summary)}</div>` : "";
+        const body = legacy ? `<div class="nsum">${esc(n.text)}</div>` : rawBlock + sumBlock;
+        const open = ids.includes(n.bookId)
+          ? `<button class="btn sm" data-open="${esc(n.bookId)}">继续对话</button>` : "";
+        return `<div class="nitem">${body}<div class="m">
+          <span>《${esc(n.title)}》</span>
+          <span>${new Date(n.at).toLocaleString("zh-CN", { hour12: false })}</span>
+          ${open}<span class="synctag">仅本机</span></div></div>`;
+      }).join("")
     : `<div class="empty-note">还没有笔记</div>`;
   $$("[data-open]").forEach(b => b.onclick = () => window.openAssistById(b.dataset.open));
 }
