@@ -526,6 +526,25 @@ body[data-theme="bookstore"]{--sheet:#efe6d2;--sheet-edge:#d9cfb9}
 .pc-bubble::before{content:"";position:absolute;left:26px;top:-9px;border:9px solid transparent;border-top:0;border-bottom-color:var(--ink)}
 .pc-bubble p{font-size:15px;line-height:1.8;min-height:3.6em;transition:opacity .25s}
 .pc-bubble p.swap{opacity:0}
+/* 生成中：气泡底色轻轻呼吸 + 三点跳动 */
+.pc-bubble.loading{animation:bubblePulse 1.6s ease-in-out infinite}
+@keyframes bubblePulse{0%,100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}50%{box-shadow:0 0 0 3px rgba(255,255,255,.08)}}
+.dots3{display:inline-flex;align-items:center;gap:7px;height:1.8em}
+.dots3 i{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.35;
+  animation:dotJump 1.05s ease-in-out infinite}
+.dots3 i:nth-child(2){animation-delay:.16s}
+.dots3 i:nth-child(3){animation-delay:.32s}
+@keyframes dotJump{0%,100%{opacity:.28;transform:translateY(0)}45%{opacity:1;transform:translateY(-4px)}}
+.btn.busy{position:relative;pointer-events:none;opacity:.72;padding-left:32px}
+.btn.busy::before{content:"";position:absolute;left:12px;top:50%;width:12px;height:12px;margin-top:-6px;
+  border:2px solid currentColor;border-right-color:transparent;border-radius:50%;
+  animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){
+  .pc-bubble.loading{animation:none}
+  .dots3 i{animation:none;opacity:.6}
+  .btn.busy::before{animation:none}
+}
 .pc-tag{display:inline-block;margin-top:8px;font-size:10px;letter-spacing:.14em;opacity:.55}
 .pc-right{display:flex;flex-direction:column;align-items:center;gap:22px}
 .pc-seal{width:136px;height:136px;transform:rotate(-9deg);border:4px double var(--accent);color:var(--accent);
@@ -1258,7 +1277,7 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
           <div class="pc-kick">经鉴定，你是一位</div>
           <h1 class="pc-name" id="pName">—</h1>
           <div class="pc-sub" id="pSub">—</div>
-          <div class="pc-bubble"><p id="pJoke">—</p><span class="pc-tag" id="pModel">AI</span></div>
+          <div class="pc-bubble"><p id="pJoke">—</p></div>
         </div>
         <div class="pc-right">
           <div class="pc-seal" id="pSeal"></div>
@@ -2575,7 +2594,7 @@ async function aiOneLiner(stats) {
 
 /* ---- 面板顶部显示真实模型（宿主 /ai/model） ---- */
 async function loadModelBadge() {
-  const targets = [$("#asModel"), $("#pModel")].filter(Boolean);
+  const targets = [$("#asModel")].filter(Boolean);
   const dot = $("#asDot");
   try {
     const res = await fetch(AI_BASE + "/model", { headers: { "accept": "application/json" } });
@@ -2960,10 +2979,18 @@ const PERSONA = (function () {
   renderAll();
 
   $("#paRun").onclick = async () => {
+    const btn = $("#paRun");
     const p = $("#pJoke");
-    const old = p.textContent;
-    p.classList.add("swap");
-    p.textContent = "正在想…";
+    const bubble = p.parentElement;
+    if (btn.classList.contains("busy")) return;          // 防重复点击
+
+    const label = btn.textContent;
+    btn.classList.add("busy");
+    btn.textContent = "正在写";
+    bubble.classList.add("loading");
+    p.innerHTML = '<span class="dots3"><i></i><i></i><i></i></span>';
+    p.setAttribute("aria-busy", "true");
+
     try {
       const text = await aiOneLiner({
         name: NAME[0], code, books: booksThisYear, daily, rate,
@@ -2972,10 +2999,13 @@ const PERSONA = (function () {
       p.textContent = text;
     } catch (error) {
       jokeIdx = (jokeIdx + 1) % jokes.length;
-      p.textContent = jokes[jokeIdx] + "";
-      old;
+      p.textContent = jokes[jokeIdx];
+    } finally {
+      btn.classList.remove("busy");
+      btn.textContent = label;
+      bubble.classList.remove("loading");
+      p.removeAttribute("aria-busy");
     }
-    setTimeout(() => p.classList.remove("swap"), RM.matches ? 0 : 120);
   };
 
   return { code, name: NAME[0], sub: NAME[1], joke: () => jokes[jokeIdx], dims,
