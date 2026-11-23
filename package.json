@@ -21,7 +21,8 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "VERSION"
+    "VERSION",
+    "assets/icon-180.png"
   ],
   "dsh": {
     "bundle": {
