@@ -295,18 +295,20 @@ async function aiOneLiner(ctx, req, res) {
     return sendJson(res, 502, { errmsg: String(error?.message ?? error).slice(0, 160) })
   }
 
+  // 1) 取最后一个闭合的 <final>；2) 只有开标记（被截断）时取开标记之后；3) 否则从草稿里挑最像答案的一句
+  const closed = [...raw.matchAll(/<final>([\s\S]*?)<\/final>/g)].map(m => m[1].trim()).filter(Boolean)
   let text = ''
-  const m = raw.match(/<final>([\s\S]*?)<\/final>/)
-  if (m) text = m[1]
+  if (closed.length > 0) text = closed[closed.length - 1]
+  else if (raw.includes('<final>')) text = raw.split('<final>').pop().replace(/<\/?final>/g, '')
   else {
     const lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean)
-    const bad = /要求|用户|输出|规则|复述|字数|需要/
-    const picked = lines.filter(s => !bad.test(s))
-    text = picked.length > 0 ? picked[picked.length - 1] : (lines[lines.length - 1] || '')
+    const draftish = /要求|用户|输出|规则|复述|字数|需要|数据|人格：|五维|写一句/
+    const cand = lines.filter(s => !draftish.test(s) && s.length >= 6)
+    text = cand.length > 0 ? cand[cand.length - 1] : ''
   }
-  text = text.replace(/<\/?final>/g, '').replace(/^["“」]|["”「]$/g, '').trim()
-  text = text.split(/\n/)[0].slice(0, 80)
-  if (!text) return sendJson(res, 502, { errmsg: '模型没有返回内容' })
+  text = text.replace(/<\/?final>/g, '').replace(/^["“「]|["”」]$/g, '').trim()
+  text = (text.split(/\n/)[0] || '').slice(0, 80)
+  if (text.length < 4) return sendJson(res, 502, { errmsg: '模型没有给出可用的一句' })
   return sendJson(res, 200, { text })
 }
 
