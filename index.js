@@ -95,6 +95,7 @@ export function apply(ctx) {
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: proxyHandler }), 'reading-desk: weread')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: (req, res) => aiChat(ctx, req, res) }), 'reading-desk: ai chat')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/one-liner', handler: (req, res) => aiOneLiner(ctx, req, res) }), 'reading-desk: ai one-liner')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/model', handler: (req, res) => aiModel(ctx, res) }), 'reading-desk: ai model')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/curator', handler: (req, res) => aiCurator(ctx, req, res) }), 'reading-desk: ai curator')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/summarize', handler: (req, res) => aiSummarize(ctx, req, res) }), 'reading-desk: ai summarize')
 }
@@ -216,6 +217,25 @@ async function collect(ctx, system, prompt) {
   if (cleaned) return cleaned
   const lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean)
   return lines[lines.length - 1] || ''
+}
+
+
+/** 面板要显示的模型：可用时给出 provider/model，不可用时说明原因。 */
+async function aiModel(ctx, res) {
+  const sel = ctx.get?.('agentDefaultModel')?.currentSelection?.()
+  const llm = ctx.get?.('llm')
+  if (llm === undefined || typeof llm.stream !== 'function') {
+    return sendJson(res, 200, { available: false, reason: '宿主没有 llm 服务' })
+  }
+  if (!sel || !sel.provider || !sel.model) {
+    return sendJson(res, 200, { available: false, reason: '没有默认模型' })
+  }
+  return sendJson(res, 200, {
+    available: true,
+    provider: sel.provider,
+    model: sel.model,
+    reasoning: sel.reasoningEffort ?? null,
+  })
 }
 
 async function aiCurator(ctx, req, res) {

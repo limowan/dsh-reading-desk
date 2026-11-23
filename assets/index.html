@@ -1248,7 +1248,7 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
           <div class="pc-kick">经鉴定，你是一位</div>
           <h1 class="pc-name" id="pName">—</h1>
           <div class="pc-sub" id="pSub">—</div>
-          <div class="pc-bubble"><p id="pJoke">—</p><span class="pc-tag">AI 未接入</span></div>
+          <div class="pc-bubble"><p id="pJoke">—</p><span class="pc-tag" id="pModel">AI</span></div>
         </div>
         <div class="pc-right">
           <div class="pc-seal" id="pSeal"></div>
@@ -1348,7 +1348,7 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
 <div class="mask" id="mask"></div>
 <aside class="assist" id="assist" aria-label="读书助手">
   <div class="as-head">
-    <b>读书助手</b><span class="dot"></span><span class="pend">未接入</span>
+    <b>读书助手</b><span class="dot"></span><span class="pend" id="asModel">连接中…</span>
     <div class="as-acts">
       <button class="as-note" id="asNote">记成笔记</button>
       <button class="as-act" id="asClose" aria-label="关闭">×</button>
@@ -1358,7 +1358,7 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
   <div class="as-body"><div class="as-msgs" id="asBody"></div></div>
   <div class="as-composer">
     <div class="as-inputwrap">
-      <input id="asInput" placeholder="写下关于这本书的想法（未接入 AI）" aria-label="输入想法">
+      <input id="asInput" placeholder="写下关于这本书的想法，或直接问它" aria-label="输入想法">
       <button class="as-send" id="asSend" aria-label="发送">↑</button>
     </div>
   </div>
@@ -2561,6 +2561,29 @@ async function aiOneLiner(stats) {
   if (!res.ok || !j.text) throw new Error(j.errmsg || "AI 不可用");
   return j.text;
 }
+
+
+/* ---- 面板顶部显示真实模型（宿主 /ai/model） ---- */
+async function loadModelBadge() {
+  const targets = [$("#asModel"), $("#pModel")].filter(Boolean);
+  try {
+    const res = await fetch(AI_BASE + "/model", { headers: { "accept": "application/json" } });
+    const j = await res.json();
+    if (j && j.available) {
+      const name = j.model;
+      targets.forEach(el => {
+        el.textContent = name;
+        el.classList.add("on");
+        el.title = `${j.provider} · ${name}`;
+      });
+      return;
+    }
+    targets.forEach(el => { el.textContent = j?.reason ? "未就绪" : "未接入"; el.title = j?.reason || ""; el.classList.remove("on"); });
+  } catch (e) {
+    targets.forEach(el => { el.textContent = "未接入"; });
+  }
+}
+loadModelBadge();
 
 function sendTalk() {
   const v = $("#asInput").value.trim();
