@@ -1,0 +1,56 @@
+{
+  "name": "dsh-reading-desk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "读书台 · 微信读书阅读计划、月历、划线回顾与月度策展，运行在 DeepSeek Harness 面板里",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "assets",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "VERSION"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/limowan/dsh-weread.git"
+  },
+  "homepage": "https://github.com/limowan/dsh-weread#readme",
+  "bugs": {
+    "url": "https://github.com/limowan/dsh-weread/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "weread",
+    "wechat-reading",
+    "reading"
+  ]
+}
