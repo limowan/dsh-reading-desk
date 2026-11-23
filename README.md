@@ -25,15 +25,17 @@
 ## 安装
 
 ```bash
-# 从 GitHub 安装
+# 从 npm 安装
+dsh plugin add dsh-reading-desk
+
+# 或从 GitHub 安装
 dsh plugin add github:limowan/dsh-reading-desk
 
 # 或本地目录
 dsh plugin add /path/to/dsh-reading-desk
 ```
 
-没有发布到 npm，所以不要用 `dsh plugin add dsh-reading-desk` 这种短名；
-用 `github:limowan/dsh-reading-desk`（已验证可从 GitHub 直接安装，不需要 npm 账号）。
+[![npm](https://img.shields.io/npm/v/dsh-reading-desk)](https://www.npmjs.com/package/dsh-reading-desk)
 
 装完在侧栏点「读书台」图标。第一次只有内置的公开样张；要显示自己的数据，
 在面板里点「连接微信读书」填 Agent Gateway 的 `wrk-` Key 同步一次。
