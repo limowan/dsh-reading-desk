@@ -1,9 +1,9 @@
-# 读书台 · dsh-weread
+# 读书台 · dsh-reading-desk
 
 微信读书的**阅读计划 / 月历 / 划线回顾 / 笔记 / 月度策展**，做成一个 DeepSeek Harness（`dsh`）插件，
 常驻在侧栏面板里。
 
-> 插件包名是 `dsh-reading-desk`，仓库名是 `dsh-weread`（沿用你给的名字）。
+> 插件包名、仓库名统一为 `dsh-reading-desk`。
 
 ![面板](docs/preview.png)
 
