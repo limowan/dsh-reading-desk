@@ -7,7 +7,8 @@
  * @module dsh-reading-desk
  */
 
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, extname, join, normalize } from 'node:path'
 
@@ -15,6 +16,32 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ASSETS = join(HERE, 'assets')
 const PREFIX = '/plugin/reading-desk'
 const GATEWAY = 'https://i.weread.qq.com/api/agent/gateway'
+
+/** API Key 只存宿主：$DSH_HOME/storages/dsh-reading-desk/config.json（600 权限） */
+const STORE_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storages', 'dsh-reading-desk')
+const CONFIG_FILE = join(STORE_DIR, 'config.json')
+const KEY_RE = /^wrk-[A-Za-z0-9_-]{6,}$/
+
+async function readStoredKey() {
+  try {
+    const raw = await readFile(CONFIG_FILE, 'utf8')
+    const value = JSON.parse(raw)
+    return typeof value.apiKey === 'string' ? value.apiKey : ''
+  } catch {
+    return ''
+  }
+}
+
+async function writeStoredKey(key) {
+  await mkdir(STORE_DIR, { recursive: true })
+  await writeFile(CONFIG_FILE, JSON.stringify({ apiKey: key, updatedAt: Date.now() }, null, 2), { mode: 0o600 })
+}
+
+async function clearStoredKey() {
+  await rm(CONFIG_FILE, { force: true }).catch(() => {})
+}
+
+const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
 
 /** Only the read-only endpoints the page actually calls. */
 const ALLOWED = new Set([
@@ -93,6 +120,7 @@ export function apply(ctx) {
   if (server === undefined) return
   ctx.effect(() => server.register({ kind: 'prefix', path: PREFIX, resource: serveAsset }), 'reading-desk: assets')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: proxyHandler }), 'reading-desk: weread')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: configRoute }), 'reading-desk: config')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: (req, res) => aiChat(ctx, req, res) }), 'reading-desk: ai chat')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/one-liner', handler: (req, res) => aiOneLiner(ctx, req, res) }), 'reading-desk: ai one-liner')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/model', handler: (req, res) => aiModel(ctx, res) }), 'reading-desk: ai model')
@@ -339,6 +367,28 @@ function sendJson(res, status, value) {
 }
 
 /** Raw handler: `/api/*` sits behind the connection auth layer, this path does not. */
+
+/** GET 返回是否已配置与掩码；POST 存 Key；DELETE 清除。 */
+async function configRoute(req, res) {
+  if (req.method === 'GET') {
+    const key = await readStoredKey()
+    return sendJson(res, 200, { configured: key !== '', masked: maskKey(key) })
+  }
+  if (req.method === 'POST') {
+    const body = await readJson(req, 4096)
+    if (body === null) return sendJson(res, 400, { errmsg: '请求格式不对' })
+    const key = String(body.key || '').trim()
+    if (!KEY_RE.test(key)) return sendJson(res, 400, { errmsg: 'API Key 格式不对' })
+    await writeStoredKey(key)
+    return sendJson(res, 200, { configured: true, masked: maskKey(key) })
+  }
+  if (req.method === 'DELETE') {
+    await clearStoredKey()
+    return sendJson(res, 200, { configured: false, masked: '' })
+  }
+  return sendJson(res, 405, { errmsg: 'method not allowed' })
+}
+
 async function proxyHandler(req, res) {
   const send = (status, value) => {
     const body = Buffer.from(JSON.stringify(value), 'utf8')
@@ -350,8 +400,13 @@ async function proxyHandler(req, res) {
   if (origin !== undefined && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
     return send(403, { errmsg: 'forbidden' })
   }
-  const auth = req.headers.authorization ?? ''
-  if (!/^Bearer wrk-[A-Za-z0-9_-]{6,}$/.test(auth)) return send(401, { errmsg: 'API Key 格式不对' })
+  let auth = req.headers.authorization ?? ''
+  if (!/^Bearer wrk-[A-Za-z0-9_-]{6,}$/.test(auth)) {
+    // 浏览器没带 Key 时用宿主保存的（插件形态下 Key 不下发到页面）
+    const stored = await readStoredKey()
+    if (stored === '') return send(401, { errmsg: '还没有配置 API Key' })
+    auth = 'Bearer ' + stored
+  }
 
   const chunks = []
   let size = 0

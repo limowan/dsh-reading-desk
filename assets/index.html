@@ -3665,7 +3665,34 @@ const PERSONA = (function () {
    - 口径与 fetch_live.py 一致，两边改动要同步
    ================================================================ */
 const WEREAD = (function () {
-  const GW = "/plugin/reading-desk/weread", VER = "1.0.5";
+  let GW = "/api/weread";             // 网页端（Cloudflare）默认，行为不变
+const VER = "1.0.5";
+/* 插件宿主可用时切到宿主转发；此时 Key 由宿主保管，页面不下发 */
+const HOST = (window.HOST = { mode: false, configured: false, masked: "" });   // 设置弹窗也要读
+(async function detectHost() {
+  try {
+    const r = await fetch("/plugin/reading-desk/config", { headers: { accept: "application/json" } });
+    if (!r.ok) return;
+    const j = await r.json();
+    HOST.mode = true;
+    HOST.configured = !!j.configured;
+    HOST.masked = j.masked || "";
+    GW = "/plugin/reading-desk/weread";
+    /* 老版本把 Key 存在浏览器：迁移一次到宿主，成功后抹掉 */
+    const legacy = localStorage.getItem("desk-wrkey") || "";
+    if (!HOST.configured && /^wrk-[A-Za-z0-9_-]{6,}$/.test(legacy)) {
+      const w = await fetch("/plugin/reading-desk/config", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: legacy }),
+      });
+      if (w.ok) {
+        const r2 = await w.json();
+        HOST.configured = true; HOST.masked = r2.masked || "";
+        localStorage.removeItem("desk-wrkey");
+      }
+    }
+  } catch (e) {}
+})();
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const pad = n => String(n).padStart(2, "0");
   const ymOf = t => { const d = new Date(t * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
@@ -3687,7 +3714,9 @@ const WEREAD = (function () {
       for (let a = 0; a < 3; a++) {
         let r;
         try {
-          r = await fetch(GW, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
+          const headers = { "Content-Type": "application/json" };
+          if (key) headers.Authorization = "Bearer " + key;
+          r = await fetch(GW, { method: "POST", headers,
             body: JSON.stringify({ api_name: name, skill_version: VER, ...params }) });
         } catch (e) { throw new Error("网络连接失败，请稍后再试"); }
         let d = null; try { d = await r.json(); } catch (e) {}
@@ -3865,8 +3894,13 @@ const WEREAD = (function () {
     const prog = stepText ? ` · ${stepText}` : calls ? ` · ${calls}` : "";
     $("#wrWhen").textContent = busy ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}${prog}`
       : synced ? `上次同步 ${synced.slice(5)}` : "";
-    $("#wrKey").placeholder = saved() ? "已保存在本机，可直接同步" : "填写微信读书 API Key";
-    $("#wrForget").hidden = busy || !(saved() || live);
+    if (HOST.mode) {
+      $("#wrKey").placeholder = HOST.configured ? `已由插件保管（${HOST.masked}），更换请重新填写` : "填写微信读书 API Key";
+      $("#wrForget").hidden = busy || !(HOST.configured || live);
+    } else {
+      $("#wrKey").placeholder = saved() ? "已保存在本机，可直接同步" : "填写微信读书 API Key";
+      $("#wrForget").hidden = busy || !(saved() || live);
+    }
     if (lastErr && !busy && !$("#wrErr").textContent) $("#wrErr").textContent = lastErr;
   }
   function finish(data) {
@@ -3892,18 +3926,49 @@ const WEREAD = (function () {
     }
   }
   async function sync() {
-    const v = $("#wrKey").value.trim(), key = v || saved();
-    if (!key) { $("#wrErr").textContent = "先填写 API Key"; $("#wrKey").focus(); return; }
-    if (!KEY_RE.test(key)) {
-      $("#wrErr").textContent = key.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头";
-      $("#wrKey").classList.add("bad"); $("#wrKey").focus(); return;
+    const v = $("#wrKey").value.trim();
+    let key = "";
+
+    if (HOST.mode) {
+      /* 插件形态：Key 交给宿主保管，页面不存明文 */
+      if (v) {
+        if (!KEY_RE.test(v)) {
+          $("#wrErr").textContent = v.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头";
+          $("#wrKey").classList.add("bad"); $("#wrKey").focus(); return;
+        }
+        const w = await fetch("/plugin/reading-desk/config", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: v }),
+        });
+        if (!w.ok) {
+          const j = await w.json().catch(() => ({}));
+          $("#wrErr").textContent = j.errmsg || "保存 Key 失败";
+          return;
+        }
+        const r = await w.json();
+        HOST.configured = true; HOST.masked = r.masked || "";
+        localStorage.removeItem("desk-wrkey");
+        $("#wrKey").value = "";
+      } else if (!HOST.configured) {
+        $("#wrErr").textContent = "先填写 API Key"; $("#wrKey").focus(); return;
+      }
+    } else {
+      const chosen = v || saved();
+      if (!chosen) { $("#wrErr").textContent = "先填写 API Key"; $("#wrKey").focus(); return; }
+      if (!KEY_RE.test(chosen)) {
+        $("#wrErr").textContent = chosen.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头";
+        $("#wrKey").classList.add("bad"); $("#wrKey").focus(); return;
+      }
+      localStorage.setItem("desk-wrkey", chosen);
+      key = chosen;
+      $("#wrKey").value = "";
     }
-    localStorage.setItem("desk-wrkey", key);
-    $("#wrKey").value = ""; $("#wrErr").textContent = ""; lastErr = "";
+
+    $("#wrErr").textContent = ""; lastErr = "";
     busy = true; t0 = Date.now(); calls = 0; stepText = ""; paint();
     tick = setInterval(paint, 1000);
     try {
-      const data = local ? await viaLocal(key) : await WEREAD.run(key, n => { calls = n; });
+      const data = local ? await viaLocal(key || saved()) : await WEREAD.run(key, n => { calls = n; });
       finish(data);
     } catch (e) {
       busy = false; clearInterval(tick);
@@ -3916,7 +3981,7 @@ const WEREAD = (function () {
   function open() {
     openModal(`<div class="ds">
       <h3>连接微信读书<span class="tipw"><button class="tip-i" type="button" aria-label="怎么获取 API Key" aria-expanded="false" aria-describedby="wrTip">i</button>
-          <span class="tip" role="tooltip" id="wrTip"><b>怎么获取</b>打开微信读书 → 设置 → 微信读书 Skill → API 密钥<b style="margin-top:8px">存在哪</b>Key 和阅读数据只存在这台设备的浏览器里；同步时经读书台转发给微信读书，不保存、不记录</span></span></h3>
+          <span class="tip" role="tooltip" id="wrTip"><b>怎么获取</b>打开微信读书 → 设置 → 微信读书 Skill → API 密钥<b style="margin-top:8px">存在哪</b>${HOST.mode ? "Key 只保存在插件宿主（600 权限），页面拿到的只有掩码；阅读数据仍存在这台设备的浏览器里" : "Key 和阅读数据只存在这台设备的浏览器里；同步时经读书台转发给微信读书，不保存、不记录"}</span></span></h3>
       <div class="ds-row">
         <div class="ds-field">
           <input id="wrKey" type="password" autocomplete="off" spellcheck="false" aria-label="微信读书 API Key" placeholder="填写微信读书 API Key">
@@ -3943,6 +4008,7 @@ const WEREAD = (function () {
     $("#wrForget").onclick = () => {
       if (!confirm("将清除本机保存的 API Key 与缓存数据，再次同步需重新填写。确认清除？")) return;
       localStorage.removeItem("desk-wrkey"); localStorage.removeItem("desk-data");
+      if (HOST.mode) fetch("/plugin/reading-desk/config", { method: "DELETE" }).catch(() => {});
       if (local) fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forget: true }) }).catch(() => {});
       location.reload();
     };
