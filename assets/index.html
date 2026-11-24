@@ -2790,13 +2790,30 @@ function renderTalkPage() {
         const body = legacy ? `<div class="nsum">${esc(n.text)}</div>` : rawBlock + sumBlock;
         const open = ids.includes(n.bookId)
           ? `<button class="btn sm" data-open="${esc(n.bookId)}">继续对话</button>` : "";
+        const canFlomo = window.DESK_SYNC && window.DESK_SYNC.has("flomo");
+        const canGet = window.DESK_SYNC && window.DESK_SYNC.has("getnotes");
+        const pushBtns = [
+          canFlomo ? `<button class="btn sm" data-push="flomo" data-nid="${esc(n.id)}">→ flomo</button>` : "",
+          canGet ? `<button class="btn sm" data-push="getnotes" data-nid="${esc(n.id)}">→ Get 笔记</button>` : "",
+        ].join("");
         return `<div class="nitem">${body}<div class="m">
           <span>《${esc(n.title)}》</span>
           <span>${new Date(n.at).toLocaleString("zh-CN", { hour12: false })}</span>
-          ${open}<span class="synctag">仅本机</span></div></div>`;
+          ${open}${pushBtns}<span class="synctag">${window.DESK_SYNC && (window.DESK_SYNC.has("flomo") || window.DESK_SYNC.has("getnotes")) ? "可推送" : "仅本机"}</span></div></div>`;
       }).join("")
     : `<div class="empty-note">还没有笔记</div>`;
   $$("[data-open]").forEach(b => b.onclick = () => window.openAssistById(b.dataset.open));
+  $$("[data-push]").forEach(b => b.onclick = async () => {
+    const n = noteList.find(x => x.id === b.dataset.nid);
+    if (!n) return;
+    b.disabled = true; const label = b.textContent; b.textContent = "推送中…";
+    try {
+      await window.DESK_SYNC.push(n, b.dataset.push);
+      toast(b.dataset.push === "flomo" ? "已推送到 flomo" : "已推送到 Get 笔记");
+    } catch (e) {
+      toast("推送失败：" + (e.message || "未知错误"));
+    } finally { b.disabled = false; b.textContent = label; }
+  });
 }
 renderTalkPage();
 
@@ -3265,38 +3282,83 @@ const PERSONA = (function () {
 /* ================================================================
    同步设置
    ================================================================ */
+/* ---------- 笔记推送：flomo incoming webhook / Get 笔记 开放 API ---------- */
 (function () {
   const CFG_KEY = "desk-sync-cfg-v1";
   const targets = [
-    { id: "local", name: "本机", fixed: true },
-    { id: "getnotes", name: "Get 笔记", hint: "填写 Get 笔记 API Token" },
-    { id: "flomo", name: "flomo", hint: "填写 flomo Webhook 地址" },
+    { id: "local", name: "本机", fixed: true, desc: "存在这台电脑的浏览器里" },
+    { id: "getnotes", name: "Get 笔记", fields: [{ k: "token", ph: "gk_live_ 开头的 API Key" }, { k: "client", ph: "cli_ 开头的 Client ID" }] },
+    { id: "flomo", name: "flomo", fields: [{ k: "hook", ph: "https://flomoapp.com/iwh/… 地址" }] },
   ];
   const cfg = loadStore(CFG_KEY, {});
+  const has = id => {
+    const c = cfg[id] || {};
+    if (id === "flomo") return /^https:\/\/flomoapp\.com\/iwh\//.test(c.hook || "");
+    if (id === "getnotes") return /^gk_/.test(c.token || "") && /^cli_/.test(c.client || "");
+    return true;
+  };
+
   function render() {
     $("#syncRows").innerHTML = targets.map(t => {
       if (t.fixed) {
-        return `<div class="srow"><div><div class="nm">${t.name}</div></div>
+        return `<div class="srow"><div><div class="nm">${t.name}</div><div class="ds">${t.desc || ""}</div></div>
           <div class="sub">默认</div><span class="schip on">使用中</span></div>`;
       }
-      const v = cfg[t.id] || "";
+      const c = cfg[t.id] || {};
+      const fields = t.fields.map(f => `<input data-id="${t.id}" data-k="${f.k}" placeholder="${f.ph}"
+        aria-label="${f.ph}" value="${esc(c[f.k] || "")}">`).join("");
       return `<div class="srow">
-        <div><div class="nm">${t.name}</div></div>
-        <input data-id="${t.id}" placeholder="${t.hint}" aria-label="${t.hint}" value="${esc(v)}">
+        <div><div class="nm">${t.name}</div><div class="ds">${has(t.id) ? "已配置" : "未配置"}</div></div>
+        <div style="display:flex;flex-direction:column;gap:6px">${fields}</div>
         <div style="display:flex;gap:8px;align-items:center">
-          <span class="schip${v ? " on" : ""}">${v ? "已填 · 未接入" : "未接入"}</span>
+          <span class="schip${has(t.id) ? " on" : ""}">${has(t.id) ? "已接入" : "未接入"}</span>
           <button class="btn sm" data-save="${t.id}">保存</button>
         </div></div>`;
     }).join("");
-    $$("[data-save]").forEach(b => b.onclick = () => {
+    $$("[data-save]").forEach(b => b.onclick = async () => {
       const id = b.dataset.save;
-      cfg[id] = $('input[data-id="' + id + '"]').value.trim();
+      cfg[id] = cfg[id] || {};
+      $$(`input[data-id="${id}"]`).forEach(inp => { cfg[id][inp.dataset.k] = inp.value.trim(); });
       saveStore(CFG_KEY, cfg);
-      render();
-      toast(cfg[id] ? "已保存" : "已清空");
+      if (!has(id)) { render(); toast("还缺必填项"); return; }
+      try {
+        await saveToHost(id);
+        render();
+        toast("已保存 · 可在笔记里推送");
+      } catch (e) {
+        toast("保存失败：" + (e.message || "宿主不可用"));
+      }
     });
   }
   render();
+
+  function hostBase() { return (window.__DESK_GW || "/plugin/reading-desk/weread").replace(/\/weread$/, ""); }
+  async function saveToHost(id) {
+    const c = cfg[id] || {};
+    const body = id === "flomo"
+      ? { flomo: { hook: c.hook || "" } }
+      : { getnote: { token: c.token || "", client: c.client || "" } };
+    const r = await fetch(hostBase() + "/sync-config", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.errmsg || ("HTTP " + r.status));
+    return j;
+  }
+
+  async function push(note, target) {
+    const gw = window.__DESK_GW || "/api/weread".replace("/weread", "");
+    const base = gw.replace(/\/weread$/, "");
+    const body = { target, title: note.title, content: note.summary ? `${note.summary}\n\n${note.text}` : note.text };
+    const r = await fetch(base + "/push/" + target, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.errmsg || ("HTTP " + r.status));
+    return j;
+  }
+
+  window.DESK_SYNC = { cfg, has, push, render };
 })();
 
 /* ================================================================

@@ -121,6 +121,9 @@ export function apply(ctx) {
   ctx.effect(() => server.register({ kind: 'prefix', path: PREFIX, resource: serveAsset }), 'reading-desk: assets')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: proxyHandler }), 'reading-desk: weread')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: configRoute }), 'reading-desk: config')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync-config', handler: syncConfigRoute }), 'reading-desk: sync config')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/flomo', handler: pushRoute }), 'reading-desk: push flomo')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/getnotes', handler: pushRoute }), 'reading-desk: push getnotes')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: (req, res) => aiChat(ctx, req, res) }), 'reading-desk: ai chat')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/one-liner', handler: (req, res) => aiOneLiner(ctx, req, res) }), 'reading-desk: ai one-liner')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/model', handler: (req, res) => aiModel(ctx, res) }), 'reading-desk: ai model')
@@ -369,6 +372,122 @@ function sendJson(res, status, value) {
 /** Raw handler: `/api/*` sits behind the connection auth layer, this path does not. */
 
 /** GET 返回是否已配置与掩码；POST 存 Key；DELETE 清除。 */
+/** 笔记推送：flomo incoming webhook 与 得到大脑（Get 笔记）开放 API。 */
+
+const FLOMO_PREFIX = 'https://flomoapp.com/iwh/'
+const BIJI_SAVE = 'https://openapi.biji.com/open/api/v1/resource/note/save'
+
+/** 读取 sync 相关配置（存在 config.json 的 extra 段）。 */
+async function readSyncConfig() {
+  try {
+    const raw = await readFile(CONFIG_FILE, 'utf8')
+    const v = JSON.parse(raw)
+    return v.sync && typeof v.sync === 'object' ? v.sync : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 合并写入 sync 配置，保留 WeRead Key 等其它字段。 */
+async function writeSyncConfig(patch) {
+  let current = {}
+  try { current = JSON.parse(await readFile(CONFIG_FILE, 'utf8')) } catch { current = {} }
+  const sync = { ...(current.sync || {}), ...patch }
+  current.sync = sync
+  await mkdir(STORE_DIR, { recursive: true })
+  await writeFile(CONFIG_FILE, JSON.stringify(current, null, 2), { mode: 0o600 })
+  return sync
+}
+
+/** GET 返回各目标是否已配置（不回传原文）。 */
+async function syncStatus(res) {
+  const s = await readSyncConfig()
+  const flomo = s.flomo || {}
+  const getnote = s.getnote || {}
+  return sendJson(res, 200, {
+    flomo: { configured: FLOMO_PREFIX.startsWith((flomo.hook || '').slice(0, FLOMO_PREFIX.length)) && (flomo.hook || '').length > FLOMO_PREFIX.length },
+    getnote: { configured: /^gk_/.test(getnote.token || '') && /^cli_/.test(getnote.client || '') },
+  })
+}
+
+/** POST {target, title, content} → 推送到对应服务。 */
+async function pushRoute(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  const body = await readJson(req, 32 * 1024)
+  if (body === null) return sendJson(res, 400, { errmsg: '请求格式不对' })
+  const content = String(body.content || '').trim()
+  if (!content) return sendJson(res, 400, { errmsg: '内容为空' })
+  const s = await readSyncConfig()
+
+  if (body.target === 'flomo') {
+    const hook = String((s.flomo || {}).hook || '')
+    if (!hook.startsWith(FLOMO_PREFIX)) return sendJson(res, 400, { errmsg: '还没有配置 flomo webhook' })
+    // 只允许 flomoapp.com，防 SSRF
+    let parsed
+    try { parsed = new URL(hook) } catch { return sendJson(res, 400, { errmsg: 'webhook 地址不合法' }) }
+    if (parsed.hostname !== 'flomoapp.com') return sendJson(res, 400, { errmsg: 'webhook 必须是 flomoapp.com' })
+    const r = await fetch(hook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+    const text = (await r.text()).slice(0, 200)
+    if (!r.ok) return sendJson(res, 502, { errmsg: `flomo 返回 ${r.status}`, detail: text })
+    return sendJson(res, 200, { ok: true, detail: text })
+  }
+
+  if (body.target === 'getnotes') {
+    const token = String((s.getnote || {}).token || '')
+    const client = String((s.getnote || {}).client || '')
+    if (!/^gk_/.test(token) || !/^cli_/.test(client)) {
+      return sendJson(res, 400, { errmsg: '还没有配置 Get 笔记 的 Key 与 Client ID' })
+    }
+    const r = await fetch(BIJI_SAVE, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: token,
+        'X-Client-ID': client,
+      },
+      body: JSON.stringify({
+        note_type: 'plain_text',
+        title: String(body.title || '').slice(0, 120) || '读书台笔记',
+        content,
+      }),
+    })
+    const j = await r.json().catch(() => ({}))
+    if (!r.ok || (typeof j.code === 'number' && j.code !== 0)) {
+      return sendJson(res, 502, { errmsg: j.msg || j.message || `Get 笔记 返回 ${r.status}`, detail: JSON.stringify(j).slice(0, 200) })
+    }
+    return sendJson(res, 200, { ok: true, noteId: j.data && (j.data.note_id || j.data.id) || null })
+  }
+
+  return sendJson(res, 400, { errmsg: '未知的同步目标' })
+}
+
+/** POST {flomo?:{hook}, getnote?:{token,client}} → 保存并返回状态。 */
+async function syncConfigRoute(req, res) {
+  if (req.method === 'GET') return syncStatus(res)
+  if (req.method !== 'POST') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  const body = await readJson(req, 8 * 1024)
+  if (body === null) return sendJson(res, 400, { errmsg: '请求格式不对' })
+  const patch = {}
+  if (body.flomo && typeof body.flomo === 'object') {
+    const hook = String(body.flomo.hook || '').trim()
+    if (hook && !hook.startsWith(FLOMO_PREFIX)) return sendJson(res, 400, { errmsg: 'flomo webhook 必须以 https://flomoapp.com/iwh/ 开头' })
+    patch.flomo = { hook }
+  }
+  if (body.getnote && typeof body.getnote === 'object') {
+    const token = String(body.getnote.token || '').trim()
+    const client = String(body.getnote.client || '').trim()
+    if (token && !/^gk_/.test(token)) return sendJson(res, 400, { errmsg: 'Get 笔记 API Key 应以 gk_ 开头' })
+    if (client && !/^cli_/.test(client)) return sendJson(res, 400, { errmsg: 'Get 笔记 Client ID 应以 cli_ 开头' })
+    patch.getnote = { token, client }
+  }
+  await writeSyncConfig(patch)
+  return syncStatus(res)
+}
+
 async function configRoute(req, res) {
   if (req.method === 'GET') {
     const key = await readStoredKey()
