@@ -256,20 +256,28 @@ body[data-theme="bookstore"]{--glow:rgba(255,206,140,.38)}
   border-radius:50%;background:none;color:var(--faint);font-size:16px;line-height:1;cursor:pointer;
   opacity:0;transition:opacity .15s,background .15s,color .15s}
 .tr:hover .del,.tr.sel .del{opacity:1}
-.tr .del:hover{background:var(--accent-soft);color:var(--accent)}
+.tr .del:hover{background:rgba(229,72,77,.1);color:#e5484d}
 
 .chk{width:16px;height:16px;appearance:none;border:1.5px solid var(--line);border-radius:4px;cursor:pointer;
   background:var(--panel);position:relative;transition:.2s;flex:none}
 .chk:checked{background:var(--accent);border-color:var(--accent)}
 .chk:checked::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;
   border-right:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(40deg)}
-.batch{position:sticky;bottom:18px;z-index:10;margin-top:14px;display:none;align-items:center;gap:12px;flex-wrap:wrap;
-  border-radius:999px;padding:10px 12px 10px 22px;background:var(--ink);color:var(--panel);width:max-content;max-width:100%;
-  box-shadow:0 20px 40px -18px rgba(0,0,0,.5)}
-.batch.on{display:flex;animation:rise .4s var(--ease)}
-.batch .rangefield{background:transparent;color:var(--panel);border-color:rgba(255,255,255,.3)}
-.batch .btn{background:transparent;color:var(--panel);border-color:rgba(255,255,255,.3)}
-.batch .btn.solid{background:var(--accent);border-color:var(--accent)}
+.batch{position:sticky;bottom:18px;z-index:10;margin:18px auto 0;display:none;align-items:center;gap:10px;
+  width:max-content;max-width:100%;padding:10px 12px 10px 18px;border-radius:var(--r-lg);
+  background:var(--panel);color:var(--ink);box-shadow:0 14px 34px -14px rgba(0,0,0,.3),0 0 0 1px var(--line2);backdrop-filter:blur(10px)}
+.batch.on{display:flex;animation:barIn .26s var(--ease)}
+#page-plan.with-batch{padding-bottom:92px}
+@keyframes barIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.batch #batchCnt{font-size:13px;font-weight:600;letter-spacing:.02em}
+.batch .sep{width:1px;height:20px;background:var(--line);margin:0 4px}
+.batch .rangefield{background:var(--chip);color:var(--ink);border-color:transparent;padding:6px 12px;font-size:12px}
+.batch .rangefield:hover{border-color:var(--accent)}
+.batch .btn{background:var(--chip);border-color:transparent;color:var(--ink)}
+.batch .btn:hover{background:var(--accent-soft);color:var(--accent)}
+.batch .btn.solid{background:#e5484d;border-color:#e5484d;color:#fff}
+.batch .btn.ghost{background:none;color:var(--soft);padding:6px 8px}
+.batch .btn.ghost:hover{color:var(--ink);background:none}
 .footbar{display:flex;justify-content:space-between;margin-top:16px;font-size:12px;color:var(--soft)}
 
 /* ---------- 月度日历：每天一块小砖，读得越久越绿；点开看当天详情 ---------- */
@@ -346,6 +354,18 @@ body[data-theme="bookstore"]{--glow:rgba(255,206,140,.38)}
   box-shadow:0 40px 90px -30px rgba(0,0,0,.55);padding:30px 30px 24px;opacity:0;transform:translateY(18px) scale(.96);transition:opacity .35s var(--ease),transform .45s var(--spring)}
 .modal.on .modal-card{opacity:1;transform:none}
 .modal-card.book{width:min(780px,100%);padding:34px 36px 28px}
+.modal-card.confirm{width:min(430px,100%);padding:26px 26px 20px}
+.cf-title{font-family:var(--head);font-size:17px;font-weight:600;letter-spacing:.02em}
+.cf-desc{margin-top:10px;font-size:13px;line-height:1.8;color:var(--soft)}
+.cf-list{margin-top:12px;display:flex;flex-direction:column;gap:5px;max-height:180px;overflow:auto;font-size:13px;color:var(--ink)}
+.cf-list div{display:flex;gap:8px;line-height:1.6}
+.cf-list div::before{content:"·";color:var(--faint)}
+.cf-act{margin-top:22px;display:flex;justify-content:flex-end;gap:10px}
+.btn.solid.danger{background:#e5484d;border-color:#e5484d}
+.btn.solid.danger:hover{background:#d93a3f;border-color:#d93a3f}
+/* 破坏性按钮固定红，压过主题里的 .btn.solid */
+#cfYes,#bDelete{background:#e5484d !important;border-color:#e5484d !important;color:#fff !important}
+#cfYes:hover,#bDelete:hover{background:#d93a3f !important;border-color:#d93a3f !important}
 .modal-x{position:absolute;right:14px;top:12px;width:34px;height:34px;border-radius:50%;border:0;background:var(--chip);cursor:pointer;font-size:20px;line-height:1;z-index:3;transition:transform .3s var(--spring)}
 .modal-x:hover{transform:rotate(90deg)}
 #modalBody.swap{animation:qin .4s var(--ease)}
@@ -1119,9 +1139,10 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
     </div>
     <div class="batch" id="batch">
       <span id="batchCnt">已选 0 本</span>
+      <span class="sep"></span>
       <button class="rangefield empty" id="bRange">改阅读日期</button>
       <button class="btn solid sm danger" id="bDelete">删除</button>
-      <button class="btn sm" id="bClear">取消</button>
+      <button class="btn ghost sm" id="bClear">取消选择</button>
     </div>
   </section>
 
@@ -1883,7 +1904,9 @@ function renderPlan() {
   syncBatch();
 }
 function syncBatch() {
-  $("#batch").classList.toggle("on", selected.size > 0);
+  const on = selected.size > 0;
+  $("#batch").classList.toggle("on", on);
+  $("#page-plan").classList.toggle("with-batch", on);
   $("#batchCnt").textContent = `已选 ${selected.size} 本`;
   const all = plan.length > 0 && selected.size === plan.length;
   $("#chkAll").checked = all;
@@ -1942,12 +1965,18 @@ function undoRemove() {
   toast("已恢复");
 }
 
-$("#bDelete").onclick = e => {
+$("#bDelete").onclick = async e => {
   e.stopPropagation();
   if (!selected.size) return;
   const ids = [...selected];
-  const names = plan.filter(p => selected.has(p.bookId)).map(p => p.title.slice(0, 10));
-  if (!confirm(`从本月书单移除 ${ids.length} 本？\n${names.slice(0, 5).join("、")}${names.length > 5 ? " 等" : ""}`)) return;
+  const names = plan.filter(p => selected.has(p.bookId)).map(p => p.title);
+  const ok = await confirmDialog({
+    title: `从本月书单移除 ${ids.length} 本？`,
+    desc: "移除后 6 秒内可撤销，阅读数据不会丢失。",
+    items: names,
+    ok: "移除",
+  });
+  if (!ok) return;
   removeFromPlan(ids, "");
 };
 $("#bClear").onclick = () => {
@@ -2187,9 +2216,32 @@ function openModal(html, cls, nav) {
     const b = $("#modalBody"); b.classList.remove("swap"); void b.offsetWidth; b.classList.add("swap");
   }
 }
+/* 应用内确认：返回 Promise<boolean>，替代原生 confirm */
+let pendingConfirm = null;
+function confirmDialog({ title, desc = "", items = [], ok = "删除", danger = true }) {
+  return new Promise(resolve => {
+    const list = items.length
+      ? `<div class="cf-list">${items.map(t => `<div>${esc(t)}</div>`).join("")}</div>` : "";
+    openModal(`<div class="cf">
+      <h3 class="cf-title">${esc(title)}</h3>
+      ${desc ? `<p class="cf-desc">${esc(desc)}</p>` : ""}
+      ${list}
+      <div class="cf-act">
+        <button class="btn sm" id="cfNo" type="button">取消</button>
+        <button class="btn solid sm${danger ? " danger" : ""}" id="cfYes" type="button">${esc(ok)}</button>
+      </div></div>`, "confirm");
+    pendingConfirm = resolve;
+    const done = v => { pendingConfirm = null; closeModal(); resolve(v); };
+    $("#cfYes").onclick = () => done(true);
+    $("#cfNo").onclick = () => done(false);
+    setTimeout(() => $("#cfNo").focus({ preventScroll: true }), 60);
+  });
+}
+
 function closeModal() {
   const m = $("#modal");
   if (!m || m.hidden) return;
+  if (pendingConfirm) { const r = pendingConfirm; pendingConfirm = null; r(false); }
   m.classList.remove("on"); modalNav = null;
   document.body.style.overflow = "";
   setTimeout(() => { if (!m.classList.contains("on")) m.hidden = true; }, 260);
