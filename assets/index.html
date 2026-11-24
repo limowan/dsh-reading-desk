@@ -1951,7 +1951,6 @@ $("#bDelete").onclick = async e => {
   const names = plan.filter(p => selected.has(p.bookId)).map(p => p.title);
   const ok = await confirmDialog({
     title: `从本月书单移除 ${ids.length} 本？`,
-    desc: "这些书会从本月书单移除，阅读记录不受影响。",
     items: names,
     ok: "移除",
   });
