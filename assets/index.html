@@ -240,7 +240,7 @@ body[data-theme="bookstore"]{--glow:rgba(255,206,140,.38)}
 .rangefield.empty{color:var(--faint);font-family:var(--sans)}
 .th,.tr{display:grid;grid-template-columns:22px 26px 44px minmax(0,1fr) 140px 120px 60px;gap:14px;align-items:center}
 .th{padding:4px 10px 12px;font-size:11px;letter-spacing:.14em;color:var(--faint);border-bottom:1px solid var(--line)}
-.tr{padding:12px 10px;border-bottom:1px solid var(--line2);transition:background .2s;cursor:pointer;border-radius:var(--r)}
+.tr{position:relative;padding:12px 10px;border-bottom:1px solid var(--line2);transition:background .2s;cursor:pointer;border-radius:var(--r)}
 .tr:hover{background:var(--panel2)}
 .tr.sel{background:var(--accent-soft)}
 .tr .cov{width:44px;height:60px}
@@ -252,6 +252,12 @@ body[data-theme="bookstore"]{--glow:rgba(255,206,140,.38)}
 .tr .date:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 .tr .pg{margin-top:0}
 .tr .hrs{font-family:var(--mono);font-size:12px;color:var(--soft);text-align:right}
+.tr .del{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:26px;height:26px;border:0;
+  border-radius:50%;background:none;color:var(--faint);font-size:16px;line-height:1;cursor:pointer;
+  opacity:0;transition:opacity .15s,background .15s,color .15s}
+.tr:hover .del,.tr.sel .del{opacity:1}
+.tr .del:hover{background:var(--accent-soft);color:var(--accent)}
+
 .chk{width:16px;height:16px;appearance:none;border:1.5px solid var(--line);border-radius:4px;cursor:pointer;
   background:var(--panel);position:relative;transition:.2s;flex:none}
 .chk:checked{background:var(--accent);border-color:var(--accent)}
@@ -1113,8 +1119,8 @@ body[data-theme="bookstore"] .rows .brow+.brow{border-top:1px dashed var(--line)
     </div>
     <div class="batch" id="batch">
       <span id="batchCnt">已选 0 本</span>
-      <button class="rangefield empty" id="bRange">选择阅读日期</button>
-      <button class="btn solid sm" id="bApply" disabled>应用到所选</button>
+      <button class="rangefield empty" id="bRange">改阅读日期</button>
+      <button class="btn solid sm danger" id="bDelete">删除</button>
       <button class="btn sm" id="bClear">取消</button>
     </div>
   </section>
@@ -1860,7 +1866,12 @@ function renderPlan() {
     pg.innerHTML = pgBar(p.progress);
     const hrs = document.createElement("span"); hrs.className = "hrs";
     hrs.textContent = p.hours ? `${Number(p.hours).toFixed(1)} 小时` : "—";
-    r.append(chk, no, cv, tt, date, pg, hrs);
+    const del = document.createElement("button");
+    del.className = "del"; del.type = "button";
+    del.setAttribute("aria-label", `从书单移除《${p.title}》`);
+    del.textContent = "×";
+    del.onclick = e => { e.stopPropagation(); removeFromPlan([p.bookId], p.title.slice(0, 12)); };
+    r.append(chk, no, cv, tt, date, pg, hrs, del);
     r.onclick = () => openBook(p);
     box.appendChild(r);
   });
@@ -1885,30 +1896,63 @@ $("#chkAll").onchange = e => {
   else selected.clear();
   renderPlan();
 };
+/* 批量改期：选完区间立即应用 */
 $("#bRange").onclick = e => {
   e.stopPropagation();
+  if (!selected.size) return;
   const anchor = e.currentTarget;
-  openRange(anchor, batchRange && batchRange[0], batchRange && batchRange[1], (a, b) => {
-    batchRange = [a, b];
-    anchor.classList.remove("empty");
-    anchor.textContent = rangeText(a, b);
-    $("#bApply").disabled = false;
+  openRange(anchor, null, null, (a2, b2) => {
+    const cnt = selected.size;
+    plan.forEach(p => { if (selected.has(p.bookId)) { p.dayStart = Number(a2.slice(8)); p.dayEnd = Number(b2.slice(8)); } });
+    savePlan();
+    selected.clear();
+    renderPlan(); renderToday(); buildCal();
+    toast(`${cnt} 本改为 ${rangeText(a2, b2)}`);
   });
 };
-$("#bApply").onclick = () => {
-  if (!batchRange) return;
-  const [a, b] = batchRange;
-  const cnt = selected.size;
-  plan.forEach(p => { if (selected.has(p.bookId)) { p.dayStart = Number(a.slice(8)); p.dayEnd = Number(b.slice(8)); } });
-  savePlan();
-  toast(`${cnt} 本已改为 ${rangeText(a, b)}`);
-  selected.clear(); batchRange = null;
-  $("#bRange").classList.add("empty"); $("#bRange").textContent = "选择阅读日期"; $("#bApply").disabled = true;
-  renderPlan(); renderToday(); buildCal();
+
+/* 删除（单个 / 批量）：删完给 6 秒撤销 */
+let undoCtx = null, undoTimer = 0;
+function removeFromPlan(ids, label) {
+  const keep = plan.filter(p => !ids.includes(p.bookId));
+  if (keep.length === plan.length) return;
+  undoCtx = { plan: plan.slice(), selected: new Set(selected) };
+  plan = keep;
+  ids.forEach(id => selected.delete(id));
+  savePlan(); renderPlan(); renderToday(); buildCal();
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(() => { undoCtx = null; const u = $("#bUndo"); if (u) u.remove(); }, 6000);
+  toast(label ? `已移除《${label}》 · 6 秒内可撤销` : `已移除 ${ids.length} 本 · 6 秒内可撤销`);
+  let u = $("#bUndo");
+  if (!u) {
+    u = document.createElement("button");
+    u.className = "btn sm"; u.id = "bUndo"; u.textContent = "撤销";
+    u.onclick = () => undoRemove();
+    $("#batch").appendChild(u);
+  }
+  $("#batch").classList.add("on");
+}
+function undoRemove() {
+  if (!undoCtx) return;
+  plan = undoCtx.plan;
+  selected = undoCtx.selected;
+  undoCtx = null; clearTimeout(undoTimer);
+  const u = $("#bUndo"); if (u) u.remove();
+  savePlan(); renderPlan(); renderToday(); buildCal();
+  toast("已恢复");
+}
+
+$("#bDelete").onclick = e => {
+  e.stopPropagation();
+  if (!selected.size) return;
+  const ids = [...selected];
+  const names = plan.filter(p => selected.has(p.bookId)).map(p => p.title.slice(0, 10));
+  if (!confirm(`从本月书单移除 ${ids.length} 本？\n${names.slice(0, 5).join("、")}${names.length > 5 ? " 等" : ""}`)) return;
+  removeFromPlan(ids, "");
 };
 $("#bClear").onclick = () => {
-  selected.clear(); batchRange = null;
-  $("#bRange").classList.add("empty"); $("#bRange").textContent = "选择阅读日期"; $("#bApply").disabled = true;
+  selected.clear();
+  $("#bRange").classList.add("empty"); $("#bRange").textContent = "改阅读日期";
   renderPlan();
 };
 
