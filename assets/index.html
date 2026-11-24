@@ -1934,35 +1934,14 @@ $("#bRange").onclick = e => {
   });
 };
 
-/* 删除（单个 / 批量）：删完给 6 秒撤销 */
-let undoCtx = null, undoTimer = 0;
+/* 删除（单个 / 批量）：直接移除；选中项删空后底部条自动收起 */
 function removeFromPlan(ids, label) {
   const keep = plan.filter(p => !ids.includes(p.bookId));
   if (keep.length === plan.length) return;
-  undoCtx = { plan: plan.slice(), selected: new Set(selected) };
   plan = keep;
   ids.forEach(id => selected.delete(id));
   savePlan(); renderPlan(); renderToday(); buildCal();
-  clearTimeout(undoTimer);
-  undoTimer = setTimeout(() => { undoCtx = null; const u = $("#bUndo"); if (u) u.remove(); }, 6000);
-  toast(label ? `已移除《${label}》 · 6 秒内可撤销` : `已移除 ${ids.length} 本 · 6 秒内可撤销`);
-  let u = $("#bUndo");
-  if (!u) {
-    u = document.createElement("button");
-    u.className = "btn sm"; u.id = "bUndo"; u.textContent = "撤销";
-    u.onclick = () => undoRemove();
-    $("#batch").appendChild(u);
-  }
-  $("#batch").classList.add("on");
-}
-function undoRemove() {
-  if (!undoCtx) return;
-  plan = undoCtx.plan;
-  selected = undoCtx.selected;
-  undoCtx = null; clearTimeout(undoTimer);
-  const u = $("#bUndo"); if (u) u.remove();
-  savePlan(); renderPlan(); renderToday(); buildCal();
-  toast("已恢复");
+  toast(label ? `已移除《${label}》` : `已移除 ${ids.length} 本`);
 }
 
 $("#bDelete").onclick = async e => {
@@ -1972,7 +1951,7 @@ $("#bDelete").onclick = async e => {
   const names = plan.filter(p => selected.has(p.bookId)).map(p => p.title);
   const ok = await confirmDialog({
     title: `从本月书单移除 ${ids.length} 本？`,
-    desc: "移除后 6 秒内可撤销，阅读数据不会丢失。",
+    desc: "这些书会从本月书单移除，阅读记录不受影响。",
     items: names,
     ok: "移除",
   });
