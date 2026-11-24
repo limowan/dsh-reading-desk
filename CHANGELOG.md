@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.2]
+
+- Same content as 0.1.1; that version number was consumed by npm's staged-publish bookkeeping and cannot be published.
+
 ## [0.1.1]
 
 - Fix the plan date-range picker: hovering no longer rebuilds the popover, so the second click registers; adds month navigation.
