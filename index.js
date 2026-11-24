@@ -46,7 +46,7 @@ const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
 /** Only the read-only endpoints the page actually calls. */
 const ALLOWED = new Set([
   '/shelf/sync', '/readdata/detail', '/book/getprogress',
-  '/user/notebooks', '/review/list/mine', '/book/bookmarklist',
+  '/user/notebooks', '/review/list/mine', '/book/bookmarklist', '/store/search',
 ])
 
 const MIME = {

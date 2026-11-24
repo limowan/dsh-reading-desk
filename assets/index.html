@@ -313,7 +313,7 @@ body[data-theme="bookstore"]{--glow:rgba(255,206,140,.38)}
 .rp-f.ph{color:var(--faint)}
 .rp-f.on{background:var(--panel);box-shadow:inset 0 0 0 1.5px var(--accent)}
 .rp-arrow{color:var(--faint);font-size:12px}
-.rp-title{text-align:center;font-size:13px;font-weight:600;margin:10px 0 4px}
+.rp-title{display:flex;align-items:center;justify-content:center;gap:12px;font-size:13px;font-weight:600;margin:8px 0 2px}
 .rp-week,.rp-grid{display:grid;grid-template-columns:repeat(7,1fr)}
 .rp-week span{text-align:center;font-size:11px;color:var(--faint);padding:4px 0}
 .rp-cell{height:36px;display:grid;place-items:center;position:relative}
@@ -1613,57 +1613,92 @@ $("#tabs").onkeydown = e => {
 };
 addEventListener("resize", moveInk);
 
-/* ---------- 区间日期选择器（参考 Arco RangePicker：打开即显示当前区间，选完即生效） ---------- */
+/* ---------- 区间日期选择器：一次建 DOM，只切换样式；支持翻月 ---------- */
 let dpEl = null;
 function closeDp() { if (dpEl !== null) { const el = dpEl; dpEl = null; el.classList.add("out"); setTimeout(() => el.remove(), 160); } }
 function openRange(anchor, start, end, onPick) {
   closeDp(); closeModal();
   const wrap = document.createElement("div"); wrap.className = "rp";
-  /* 书单按月排期，面板固定在本月 */
-  const vy = MON[0], vm = MON[1] - 1;
-  let a = start || null, b = end || null, picking = false, hover = null;
-  const fmt = k => k ? `${Number(k.slice(5, 7))} 月 ${Number(k.slice(8))} 日` : "";
-  const paint = () => {
+  let vy = MON[0], vm = MON[1] - 1, a = start || null, b = end || null;
+  let picking = false, hover = null;
+  const fmt = k => (k ? `${Number(k.slice(5, 7))} 月 ${Number(k.slice(8))} 日` : "");
+  const isoOf = d => `${vy}-${pad2(vm + 1)}-${pad2(d)}`;
+
+  wrap.innerHTML = `
+    <div class="rp-bar">
+      <span class="rp-f" id="rpA">开始日期</span>
+      <span class="rp-arrow">→</span>
+      <span class="rp-f" id="rpB" data-pick="1">结束日期</span>
+    </div>
+    <div class="rp-title"><button class="dp-nav" id="rpPrev" aria-label="上个月">‹</button><span id="rpMonth"></span><button class="dp-nav" id="rpNext" aria-label="下个月">›</button></div>
+    <div class="rp-week">${["一","二","三","四","五","六","日"].map(w => `<span>${w}</span>`).join("")}</div>
+    <div class="rp-grid" id="rpGrid"></div>`;
+
+  const grid = wrap.querySelector("#rpGrid");
+  const elA = wrap.querySelector("#rpA"), elB = wrap.querySelector("#rpB");
+
+  function build() {
     const lead = (new Date(vy, vm, 1).getDay() + 6) % 7;
     const days = new Date(vy, vm + 1, 0).getDate();
-    const lo = picking && hover ? (hover < a ? hover : a) : a;
-    const hi = picking && hover ? (hover < a ? a : hover) : b;
+    wrap.querySelector("#rpMonth").textContent = `${vy} 年 ${vm + 1} 月`;
     let cells = "";
     for (let i = 0; i < lead; i++) cells += `<span class="rp-cell blank"></span>`;
     for (let d = 1; d <= days; d++) {
-      const k = `${vy}-${pad2(vm + 1)}-${pad2(d)}`;
-      let cls = "rp-cell";
-      if (lo && hi && k > lo && k < hi) cls += picking ? " pre" : " in";
-      if (k === lo && hi) cls += " s";
-      if (k === hi && lo) cls += " e";
-      if (k === lo || k === hi || (picking && k === a)) cls += " edge";
-      if (k === D.today) cls += " today";
-      const col = (lead + d - 1) % 7;
-      if (col === 0) cls += " c0"; if (col === 6) cls += " c6";
-      cells += `<span class="${cls}"><button data-iso="${k}">${d}</button></span>`;
+      const k = isoOf(d), col = (lead + d - 1) % 7;
+      cells += `<span class="rp-cell${col === 0 ? " c0" : ""}${col === 6 ? " c6" : ""}">`
+            + `<button type="button" data-iso="${k}">${d}</button></span>`;
     }
-    wrap.innerHTML = `
-      <div class="rp-bar">
-        <span class="rp-f${!picking ? " on" : ""}${a ? "" : " ph"}">${fmt(a) || "开始日期"}</span>
-        <span class="rp-arrow">→</span>
-        <span class="rp-f${picking ? " on" : ""}${(picking ? hover : b) ? "" : " ph"}">${fmt(picking ? hover : b) || "结束日期"}</span>
-      </div>
-      <div class="rp-title">${vy} 年 ${vm + 1} 月</div>
-      <div class="rp-week">${["一", "二", "三", "四", "五", "六", "日"].map(w => `<span>${w}</span>`).join("")}</div>
-      <div class="rp-grid">${cells}</div>`;
-    $$(".rp-cell button", wrap).forEach(btn => {
-      btn.onclick = e => {
+    grid.innerHTML = cells;
+    grid.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", e => {
         e.stopPropagation();
         const k = btn.dataset.iso;
-        if (!picking) { a = k; b = null; picking = true; hover = k; paint(); return; }
-        if (k < a) { b = a; a = k; } else b = k;
-        picking = false; hover = null; paint();
-        setTimeout(() => { onPick(a, b); closeDp(); }, 180);
-      };
-      btn.onmouseenter = () => { if (picking) { hover = btn.dataset.iso; paint(); } };
+        if (!picking) { a = k; b = null; picking = true; hover = k; refresh(); return; }
+        if (k < a) { b = a; a = k; } else { b = k; }
+        picking = false; hover = null; refresh();
+        const lo = a, hi = b;
+        setTimeout(() => { onPick(lo, hi); close(); }, 160);
+      });
+      btn.addEventListener("mouseenter", () => {
+        if (!picking) return;
+        hover = btn.dataset.iso;
+        refresh();                       // 只改样式，不重建 DOM
+      });
     });
+    refresh();
+  }
+
+  function refresh() {
+    const lo = picking && hover ? (hover < a ? hover : a) : a;
+    const hi = picking && hover ? (hover < a ? a : hover) : b;
+    elA.textContent = fmt(a) || "开始日期";
+    elA.classList.toggle("ph", !a);
+    elA.classList.toggle("on", !picking);
+    elB.textContent = fmt(picking ? hover : b) || "结束日期";
+    elB.classList.toggle("ph", !(picking ? hover : b));
+    elB.classList.toggle("on", picking);
+    grid.querySelectorAll("button").forEach(btn => {
+      const k = btn.dataset.iso;
+      const cell = btn.parentElement;
+      cell.classList.remove("in", "pre", "s", "e", "edge", "today");
+      if (lo && hi && k > lo && k < hi) cell.classList.add(picking ? "pre" : "in");
+      if (lo && k === lo && hi) cell.classList.add("s");
+      if (hi && k === hi) cell.classList.add("e");
+      if (k === lo || k === hi) cell.classList.add("edge");
+      if (k === D.today) cell.classList.add("today");
+    });
+  }
+
+  wrap.querySelector("#rpPrev").onclick = e => {
+    e.stopPropagation();
+    vm -= 1; if (vm < 0) { vm = 11; vy -= 1; } build();
   };
-  paint();
+  wrap.querySelector("#rpNext").onclick = e => {
+    e.stopPropagation();
+    vm += 1; if (vm > 11) { vm = 0; vy += 1; } build();
+  };
+
+  build();
   document.body.appendChild(wrap);
   const r = anchor.getBoundingClientRect(), w = wrap.offsetWidth, h = wrap.offsetHeight;
   const below = r.bottom + 8 + h < innerHeight;
@@ -1671,6 +1706,7 @@ function openRange(anchor, start, end, onPick) {
   wrap.style.top = (below ? r.bottom + 8 : Math.max(8, r.top - h - 8)) + scrollY + "px";
   wrap.style.transformOrigin = below ? "top left" : "bottom left";
   dpEl = wrap;
+
   const onKey = e => { if (e.key === "Escape") close(); };
   const onDoc = e => { if (!wrap.contains(e.target)) close(); };
   function close() { closeDp(); document.removeEventListener("click", onDoc); document.removeEventListener("keydown", onKey); }
@@ -1877,17 +1913,18 @@ $("#bClear").onclick = () => {
 };
 
 const q = $("#q"), sg = $("#sugg");
-q.oninput = () => {
-  const kw = q.value.trim().toLowerCase();
-  if (!kw) { sg.classList.remove("on"); return; }
-  const hits = (D.candidates || []).filter(c => (c.title || "").toLowerCase().includes(kw) || (c.author || "").toLowerCase().includes(kw)).slice(0, 6);
+let searchSeq = 0, searchTimer = 0;
+function renderHits(hits, kw) {
   sg.innerHTML = "";
-  if (!hits.length) sg.innerHTML = `<div class="it" style="grid-template-columns:1fr"><p>没有匹配的在读书目</p></div>`;
+  if (!hits.length) {
+    sg.innerHTML = `<div class="it" style="grid-template-columns:1fr"><p>没有找到匹配的书</p></div>`;
+  }
   hits.forEach(c => {
     const it = document.createElement("div"); it.className = "it";
     const mini = coverEl(c.cover, c.title, "mini");
     const tx = document.createElement("div");
-    tx.innerHTML = `<h4>${esc(c.title)}</h4><p>${esc(join(c.author, c.category))}</p>`;
+    const extra = c.pending ? "待上架" : (c.rating ? `${c.rating} 人评` : (c.category || ""));
+    tx.innerHTML = `<h4>${esc(c.title)}</h4><p>${esc(join(c.author, extra))}</p>`;
     const inPlan = plan.some(p => p.bookId === c.bookId);
     const btn = document.createElement("button"); btn.className = "btn sm";
     btn.textContent = inPlan ? "已在书单" : "安排";
@@ -1897,9 +1934,68 @@ q.oninput = () => {
     sg.appendChild(it);
   });
   sg.classList.add("on");
+}
+function shelfHits(kw) {
+  const k = kw.toLowerCase();
+  return (D.candidates || []).filter(c =>
+    (c.title || "").toLowerCase().includes(k) || (c.author || "").toLowerCase().includes(k)).slice(0, 8);
+}
+q.oninput = () => {
+  const kw = q.value.trim();
+  clearTimeout(searchTimer);
+  if (!kw) { sg.classList.remove("on"); return; }
+  /* 先给本地结果，接口回来再替换，输入不卡 */
+  renderHits(shelfHits(kw), kw);
+  const seq = ++searchSeq;
+  searchTimer = setTimeout(async () => {
+    try {
+      const hits = await storeSearch(kw);
+      if (seq !== searchSeq) return;
+      renderHits(hits.length ? hits : shelfHits(kw), kw);
+    } catch (e) {
+      if (seq !== searchSeq) return;
+      renderHits(shelfHits(kw), kw);      // 没联网/没 Key 时用本机书架
+    }
+  }, 320);
 };
 q.onkeydown = e => { if (e.key === "Escape") { sg.classList.remove("on"); q.blur(); } };
 document.addEventListener("click", e => { if (!sg.contains(e.target) && e.target !== q) sg.classList.remove("on"); });
+/* ---------- 书目搜索：走微信读书 /store/search（含待上架），失败回落到本机书架 ---------- */
+async function storeSearch(kw) {
+  const gw = window.__DESK_GW || "/api/weread";
+  const headers = { "Content-Type": "application/json" };
+  if (!HOST.mode) {
+    const k = localStorage.getItem("desk-wrkey") || "";
+    if (!k) throw new Error("no key");
+    headers.Authorization = "Bearer " + k;
+  }
+  const r = await fetch(gw, {
+    method: "POST", headers,
+    body: JSON.stringify({ api_name: "/store/search", skill_version: "1.0.5", keyword: kw, count: 20 }),
+  });
+  if (!r.ok) throw new Error("search " + r.status);
+  const d = await r.json();
+  if (d && d.errcode) throw new Error(d.errmsg || ("errcode " + d.errcode));
+  const out = [];
+  (d.results || []).forEach(group => {
+    const pending = Number(group.scope) === 3;
+    (group.books || []).forEach(it => {
+      const b = it.bookInfo;
+      if (!b || !b.bookId || !b.title) return;
+      out.push({
+        bookId: String(b.bookId),
+        title: b.title,
+        author: b.author || "",
+        cover: String(b.cover || "").replace(/\/s_/, "/t6_"),
+        category: "",
+        pending,
+        rating: b.newRating || 0,
+      });
+    });
+  });
+  return out.slice(0, 12);
+}
+
 function pick(c) {
   pendingBook = c; arrangeRange = null;
   $("#arTitle").textContent = `《${c.title}》`;
@@ -3175,7 +3271,6 @@ const PERSONA = (function () {
     { id: "local", name: "本机", fixed: true },
     { id: "getnotes", name: "Get 笔记", hint: "填写 Get 笔记 API Token" },
     { id: "flomo", name: "flomo", hint: "填写 flomo Webhook 地址" },
-    { id: "custom", name: "自定义", hint: "填写接口地址" },
   ];
   const cfg = loadStore(CFG_KEY, {});
   function render() {
@@ -3678,6 +3773,7 @@ const HOST = (window.HOST = { mode: false, configured: false, masked: "" });   /
     HOST.configured = !!j.configured;
     HOST.masked = j.masked || "";
     GW = "/plugin/reading-desk/weread";
+    window.__DESK_GW = GW;
     /* 老版本把 Key 存在浏览器：迁移一次到宿主，成功后抹掉 */
     const legacy = localStorage.getItem("desk-wrkey") || "";
     if (!HOST.configured && /^wrk-[A-Za-z0-9_-]{6,}$/.test(legacy)) {
