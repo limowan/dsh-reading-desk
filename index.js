@@ -65,6 +65,12 @@ const MIME = {
 export const name = 'dsh-reading-desk'
 export const inject = ['webServer']
 
+/**
+ * 可选依赖：connection。存在时用它校验 Host/Origin 与浏览器鉴权，
+ * 避免浏览器里任意网页直接调用本插件的 HTTP 路由。
+ */
+export const optional = ['connection']
+
 async function serveAsset(request) {
   const url = new URL(request.url)
   let rel = decodeURIComponent(url.pathname.slice(PREFIX.length)) || '/'
@@ -119,19 +125,69 @@ export function apply(ctx) {
   const server = ctx.webServer
   if (server === undefined) return
   ctx.effect(() => server.register({ kind: 'prefix', path: PREFIX, resource: serveAsset }), 'reading-desk: assets')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: proxyHandler }), 'reading-desk: weread')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: configRoute }), 'reading-desk: config')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync-config', handler: syncConfigRoute }), 'reading-desk: sync config')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/flomo', handler: pushRoute }), 'reading-desk: push flomo')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/getnotes', handler: pushRoute }), 'reading-desk: push getnotes')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: (req, res) => aiChat(ctx, req, res) }), 'reading-desk: ai chat')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/one-liner', handler: (req, res) => aiOneLiner(ctx, req, res) }), 'reading-desk: ai one-liner')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/model', handler: (req, res) => aiModel(ctx, res) }), 'reading-desk: ai model')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/curator', handler: (req, res) => aiCurator(ctx, req, res) }), 'reading-desk: ai curator')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/summarize', handler: (req, res) => aiSummarize(ctx, req, res) }), 'reading-desk: ai summarize')
+  /** 路由统一入口：能用 connection 校验时先校验，拒绝即 401/403。 */
+  const guard = fn => (req, res) => {
+    const rejection = rejectUntrusted(ctx, req)
+    if (rejection !== undefined) {
+      res.writeHead(rejection, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ errmsg: rejection === 401 ? 'unauthorized' : 'forbidden' }))
+      return
+    }
+    return fn(req, res)
+  }
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: guard(proxyHandler) }), 'reading-desk: weread')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: guard(configRoute) }), 'reading-desk: config')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync-config', handler: guard(syncConfigRoute) }), 'reading-desk: sync config')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/flomo', handler: guard(pushRoute) }), 'reading-desk: push flomo')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/getnotes', handler: guard(pushRoute) }), 'reading-desk: push getnotes')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: guard((req, res) => aiChat(ctx, req, res)) }), 'reading-desk: ai chat')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/one-liner', handler: guard((req, res) => aiOneLiner(ctx, req, res)) }), 'reading-desk: ai one-liner')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/model', handler: guard((req, res) => aiModel(ctx, res)) }), 'reading-desk: ai model')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/curator', handler: guard((req, res) => aiCurator(ctx, req, res)) }), 'reading-desk: ai curator')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/summarize', handler: guard((req, res) => aiSummarize(ctx, req, res)) }), 'reading-desk: ai summarize')
 }
 
 /* ---------------- AI（宿主侧统一走 ctx.llm，Key 不出宿主） ---------------- */
+
+/**
+ * 拒绝来自其它站点网页的调用。
+ *
+ * 背景：这些路由由 ctx.webServer 注册，不走 DSH 的 /api 鉴权层，浏览器里任何网页
+ * 都能向 127.0.0.1 发 POST。因此逐个请求校验来源：
+ *   - Origin 必须是本机回环（浏览器无法伪造 Origin）；
+ *   - 没有 Origin 时退一步看 Referer，同样要求本机回环且来自本插件页面；
+ *   - 两者都没有（直连脚本）一律拒绝。
+ * 面板自身是本机同源页面，因此不受影响。
+ */
+const LOOPBACK_ORIGIN = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i
+
+function isLoopbackHost(hostname) {
+  return hostname === '127.0.0.1' || hostname === 'localhost'
+}
+
+function callAllowed(req) {
+  const origin = req.headers.origin
+  if (typeof origin === 'string' && origin !== '') return LOOPBACK_ORIGIN.test(origin)
+  const referer = req.headers.referer
+  if (typeof referer === 'string' && referer !== '') {
+    try {
+      const url = new URL(referer)
+      return isLoopbackHost(url.hostname) && url.pathname.startsWith(PREFIX + '/')
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+function rejectUntrusted(ctx, req) {
+  if (callAllowed(req)) return undefined
+  const connection = ctx.get?.('connection')
+  if (connection !== undefined && typeof connection.requestRejection === 'function') {
+    return connection.requestRejection({ headers: req.headers })
+  }
+  return 403
+}
 
 function modelOf(ctx) {
   const llm = ctx.get?.('llm')

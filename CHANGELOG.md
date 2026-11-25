@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.3]
+
+- Every HTTP route now checks where the call comes from: only a loopback Origin, or a Referer from this plugin's own page, is accepted; other sites in the browser are rejected (403) and direct callers with neither header get 401. `ctx.connection.requestRejection` is consulted as a fallback when available.
+
+
 ## [0.1.2]
 
 - Same content as 0.1.1; that version number was consumed by npm's staged-publish bookkeeping and cannot be published.
