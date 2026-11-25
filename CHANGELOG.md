@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4]
+
+- Incremental sync: the shelf, monthly/annual reading stats and the notebook overview are still fetched every time, but per-book progress, thoughts and highlights are only re-requested when their metadata changed, missing from the cache, or older than 24 hours. Key changes reset the cache scope so data from another account cannot leak in.
+- A failed sync keeps the previous successful dataset instead of replacing it.
+- The sync dialog only has one action (同步数据). The temporary 全量刷新 button was removed.
+- 断开并清除 now uses the in-app confirmation dialog instead of the native one.
+
+
 ## [0.1.3]
 
 - Every HTTP route now checks where the call comes from: only a loopback Origin, or a Referer from this plugin's own page, is accepted; other sites in the browser are rejected (403) and direct callers with neither header get 401. `ctx.connection.requestRejection` is consulted as a fallback when available.

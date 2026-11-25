@@ -7,6 +7,7 @@
  * @module dsh-reading-desk
  */
 
+import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -22,19 +23,23 @@ const STORE_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'storage
 const CONFIG_FILE = join(STORE_DIR, 'config.json')
 const KEY_RE = /^wrk-[A-Za-z0-9_-]{6,}$/
 
-async function readStoredKey() {
+async function readStoredConfig() {
   try {
-    const raw = await readFile(CONFIG_FILE, 'utf8')
-    const value = JSON.parse(raw)
-    return typeof value.apiKey === 'string' ? value.apiKey : ''
+    return JSON.parse(await readFile(CONFIG_FILE, 'utf8')) ?? {}
   } catch {
-    return ''
+    return {}
   }
 }
 
+async function readStoredKey() {
+  const config = await readStoredConfig()
+  return typeof config.apiKey === 'string' ? config.apiKey : ''
+}
+
 async function writeStoredKey(key) {
+  const config = await readStoredConfig()
   await mkdir(STORE_DIR, { recursive: true })
-  await writeFile(CONFIG_FILE, JSON.stringify({ apiKey: key, updatedAt: Date.now() }, null, 2), { mode: 0o600 })
+  await writeFile(CONFIG_FILE, JSON.stringify({ ...config, apiKey: key, updatedAt: Date.now(), cacheScope: randomUUID() }, null, 2), { mode: 0o600 })
 }
 
 async function clearStoredKey() {
@@ -546,8 +551,10 @@ async function syncConfigRoute(req, res) {
 
 async function configRoute(req, res) {
   if (req.method === 'GET') {
-    const key = await readStoredKey()
-    return sendJson(res, 200, { configured: key !== '', masked: maskKey(key) })
+    const config = await readStoredConfig()
+    const key = typeof config.apiKey === 'string' ? config.apiKey : ''
+    const cacheScope = key ? (config.cacheScope || (Number.isSafeInteger(config.updatedAt) ? String(config.updatedAt) : '')) : ''
+    return sendJson(res, 200, { configured: key !== '', masked: maskKey(key), cacheScope })
   }
   if (req.method === 'POST') {
     const body = await readJson(req, 4096)
