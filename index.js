@@ -59,7 +59,7 @@ const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
 const SYNC_CACHE_FILE = join(STORE_DIR, 'sync-cache.json')
 const syncJob = {
   running: false, startedAt: 0, finishedAt: 0,
-  calls: 0, mode: '', error: '', result: null, scope: '',
+  calls: 0, books: 0, totalBooks: 0, mode: '', error: '', result: null, scope: '',
 }
 
 async function readSyncCache(scope) {
@@ -84,7 +84,7 @@ async function clearSyncCacheFile() {
 /** POST /sync/start：启动一次同步（已在跑则复用）。 */
 async function syncStartRoute(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { errmsg: 'method not allowed' })
-  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls, mode: syncJob.mode })
+  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls, books: syncJob.books, totalBooks: syncJob.totalBooks, mode: syncJob.mode })
   const key = await readStoredKey()
   if (key === '') return sendJson(res, 400, { errmsg: '还没有配置 API Key' })
 
@@ -96,11 +96,15 @@ async function syncStartRoute(req, res) {
 
   Object.assign(syncJob, {
     running: true, startedAt: Date.now(), finishedAt: 0,
-    calls: 0, mode, error: '', result: null, scope,
+    calls: 0, books: 0, totalBooks: 0, mode, error: '', result: null, scope,
   })
 
   const engine = createSyncEngine()
-  engine.run(key, calls => { syncJob.calls = calls; }, { previous, next })
+  engine.run(key, (calls, books, totalBooks) => {
+      syncJob.calls = calls;
+      syncJob.books = books;
+      syncJob.totalBooks = totalBooks;
+    }, { previous, next })
     .then(async data => {
       data.syncMode = mode
       syncJob.result = data
@@ -123,6 +127,8 @@ async function syncStatusRoute(ctx, req, res) {
   return sendJson(res, 200, {
     running: syncJob.running,
     calls: syncJob.calls,
+    books: syncJob.books,
+    totalBooks: syncJob.totalBooks,
     mode: syncJob.mode,
     error: syncJob.error,
     finishedAt: syncJob.finishedAt,

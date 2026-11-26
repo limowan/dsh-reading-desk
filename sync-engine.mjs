@@ -82,6 +82,8 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
       return fresh;
     }
     let calls = 0, requestQueue = Promise.resolve();
+    let doneBooks = 0, totalBooks = 0;
+    const report = () => { if (step) step(calls, doneBooks, totalBooks); };
     function dispatch(body) {
       let response;
       const turn = requestQueue.then(async () => {
@@ -125,7 +127,7 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
         if (rateLimited) pauseGateway(r, a);
         let d = null; try { d = await r.json(); } catch (e) {}
         signal.throwIfAborted();
-        calls++; step && step(calls);
+        calls++; report();
         if (r.status === 401 || r.status === 403) throw new Error("API Key 无效或已过期");
         const code = d?.errcode ? String(d.errcode) : "";
         if (rateLimited || code === "-202") {
@@ -215,7 +217,8 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
       readSecs[b.bookId] = p.readSecs;
       return p;
     };
-    const yearProgress = await pmap(thisYear, 2, getProg);
+    totalBooks += thisYear.length;
+    const yearProgress = await pmap(thisYear, 2, async b => { const r = await getProg(b); doneBooks++; report(); return r; });
     thisYear.forEach((b, i) => {
       const p = yearProgress[i], id = String(b.bookId);
       if (p.progress === 100 && p.finishTime) finishMonth[id] = ymOf(p.finishTime);
@@ -295,6 +298,7 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
       .slice(0, SYNC_NOTE_RECHECK_LIMIT)
       .map(({ id }) => id));
     const highlights = {};
+    totalBooks += noteTargets.length;
     await pmap(noteTargets, 2, async ({ id: bid, signature }) => {
       const { reviews, marks } = await cached("notes", bid, signature, async () => {
         const response = await api("/review/list/mine", { bookid: bid, count: 50 });
@@ -319,8 +323,9 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
           .map(x => ({ text: x.markText.trim(), note: "", date: ymdOf(x.createTime || 0), chapter: chaps[x.chapterUid] || "" })),
       ];
       const seen = new Set(), uniq = lines.filter(l => !seen.has(l.text) && seen.add(l.text)).slice(0, 8);
-      if (!uniq.length) return;
+      if (!uniq.length) { doneBooks++; report(); return; }
       highlights[bid] = { ...uniq[0], more: uniq.slice(1) };
+      doneBooks++; report();
     });
     const cards = [];
     // 回顾卡：有想法的划线优先，不够 12 张再用普通划线补

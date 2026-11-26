@@ -4281,7 +4281,7 @@ const hostReady = (async function detectHost() {
   const live = !D.sample;
   const synced = live ? (D.syncedAt || ((D.source || "").match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) || [])[1] || "") : "";
   const baseLabel = live ? `微信读书 · ${synced.slice(5)}` : "微信读书";
-  let busy = false, t0 = 0, tick = 0, calls = 0, stepText = "", lastErr = "", local = null;
+  let busy = false, t0 = 0, tick = 0, calls = 0, books = 0, totalBooks = 0, stepText = "", lastErr = "", local = null;
   let syncMode = "未同步";
   const lastMode = (() => {
     try { const d = JSON.parse(localStorage.getItem("desk-data") || "null"); return d && d.syncMode || ""; } catch (e) { return ""; }
@@ -4299,7 +4299,7 @@ const hostReady = (async function detectHost() {
     btn.disabled = busy; btn.classList.toggle("busy", busy);
     $("#wrSyncT").textContent = busy ? "同步中" : "同步数据";
     const sec = Math.round((Date.now() - t0) / 1000);
-    const prog = stepText ? ` · ${stepText}` : calls ? ` · ${calls}` : "";
+    const prog = totalBooks ? ` · 已同步 ${books}/${totalBooks} 本` : calls ? " · 正在读取书目" : "";
     const cacheKB = (() => {
       try {
         const raw = localStorage.getItem(SYNC_CACHE_KEY);
@@ -4307,7 +4307,7 @@ const hostReady = (async function detectHost() {
       } catch (e) { return 0; }
     })();
     $("#wrWhen").textContent = busy ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}${prog}`
-      : `${synced ? `上次同步 ${synced.slice(5)}${lastMode ? " · " + lastMode : ""}` : ""}${cacheKB ? ` · 缓存约 ${cacheKB} KB` : ""}`
+      : `${synced ? `上次同步 ${synced.slice(5)}` : ""}${cacheKB ? ` · 缓存约 ${cacheKB} KB` : ""}`
     if (HOST.mode) {
       $("#wrKey").placeholder = HOST.configured ? `已由插件保管（${HOST.masked}），更换请重新填写` : "填写微信读书 API Key";
       $("#wrForget").hidden = busy || !(HOST.configured || live);
@@ -4427,6 +4427,8 @@ const hostReady = (async function detectHost() {
         st = await (await fetch("/plugin/reading-desk/sync/status", { headers: { accept: "application/json" }, cache: "no-store" })).json();
       } catch (e) { continue; }
       if (typeof st.calls === "number") calls = st.calls;
+      if (typeof st.books === "number") books = st.books;
+      if (typeof st.totalBooks === "number") totalBooks = st.totalBooks;
       if (st.mode) syncMode = st.mode;
       paint();
       if (st.running) continue;
@@ -4546,7 +4548,7 @@ const hostReady = (async function detectHost() {
         }
         return;
       }
-      busy = true; t0 = Date.now(); calls = st.calls || 0; syncMode = st.mode || "进行中";
+      busy = true; t0 = Date.now(); calls = st.calls || 0; books = st.books || 0; totalBooks = st.totalBooks || 0; syncMode = st.mode || "进行中";
       markSyncRunning(true);
       tick = setInterval(paint, 1000); paint();
       const data = await hostSyncWait();
@@ -4560,7 +4562,7 @@ const hostReady = (async function detectHost() {
     sessionStorage.removeItem("desk-synced");
     let info = null; try { info = JSON.parse(sessionStorage.getItem("desk-sync-info") || "null"); } catch (e) {}
     sessionStorage.removeItem("desk-sync-info");
-    const msg = info ? `同步完成 · ${info.mode} · ${info.calls} 次请求` : "同步完成";
+    const msg = "同步成功";
     const notice = info?.cacheSaved === false ? "同步完成，但缓存没存下来，下次可能重新拉取" : msg;
     setTimeout(() => toast(notice), 600);
   } else if (wasSyncing) {
