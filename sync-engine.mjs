@@ -78,12 +78,14 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
         return old.value;
       }
       const fresh = await fetchValue();
+      updatedBooks++;                 // 真正发生网络请求（缓存未命中或轮换补查）
+      report();
       next[type][id] = { signature, value: fresh, at: Date.now() };
       return fresh;
     }
     let calls = 0, requestQueue = Promise.resolve();
-    let doneBooks = 0, totalBooks = 0;
-    const report = () => { if (step) step(calls, doneBooks, totalBooks); };
+    let doneBooks = 0, totalBooks = 0, updatedBooks = 0;
+    const report = () => { if (step) step(calls, doneBooks, totalBooks, updatedBooks); };
     function dispatch(body) {
       let response;
       const turn = requestQueue.then(async () => {

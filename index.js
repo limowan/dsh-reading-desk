@@ -59,7 +59,7 @@ const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
 const SYNC_CACHE_FILE = join(STORE_DIR, 'sync-cache.json')
 const syncJob = {
   running: false, startedAt: 0, finishedAt: 0,
-  calls: 0, books: 0, totalBooks: 0, mode: '', error: '', result: null, scope: '',
+  calls: 0, books: 0, totalBooks: 0, updatedBooks: 0, mode: '', error: '', result: null, scope: '',
 }
 
 async function readSyncCache(scope) {
@@ -96,7 +96,7 @@ async function syncStartRoute(req, res) {
 
   Object.assign(syncJob, {
     running: true, startedAt: Date.now(), finishedAt: 0,
-    calls: 0, books: 0, totalBooks: 0, mode, error: '', result: null, scope,
+    calls: 0, books: 0, totalBooks: 0, updatedBooks: 0, mode, error: '', result: null, scope,
   })
 
   const engine = createSyncEngine()
@@ -129,6 +129,7 @@ async function syncStatusRoute(ctx, req, res) {
     calls: syncJob.calls,
     books: syncJob.books,
     totalBooks: syncJob.totalBooks,
+    updatedBooks: syncJob.updatedBooks,
     mode: syncJob.mode,
     error: syncJob.error,
     finishedAt: syncJob.finishedAt,

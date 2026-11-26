@@ -4281,7 +4281,8 @@ const hostReady = (async function detectHost() {
   const live = !D.sample;
   const synced = live ? (D.syncedAt || ((D.source || "").match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) || [])[1] || "") : "";
   const baseLabel = live ? `微信读书 · ${synced.slice(5)}` : "微信读书";
-  let busy = false, t0 = 0, tick = 0, calls = 0, books = 0, totalBooks = 0, stepText = "", lastErr = "", local = null;
+  let silentApply = false;
+  let busy = false, t0 = 0, tick = 0, calls = 0, books = 0, totalBooks = 0, updatedBooks = 0, stepText = "", lastErr = "", local = null;
   let syncMode = "未同步";
   const lastMode = (() => {
     try { const d = JSON.parse(localStorage.getItem("desk-data") || "null"); return d && d.syncMode || ""; } catch (e) { return ""; }
@@ -4299,7 +4300,7 @@ const hostReady = (async function detectHost() {
     btn.disabled = busy; btn.classList.toggle("busy", busy);
     $("#wrSyncT").textContent = busy ? "同步中" : "同步数据";
     const sec = Math.round((Date.now() - t0) / 1000);
-    const prog = totalBooks ? ` · 已同步 ${books}/${totalBooks} 本` : calls ? " · 正在读取书目" : "";
+    const prog = totalBooks ? ` · 已核对 ${books}/${totalBooks} 本 · 更新 ${updatedBooks} 本` : calls ? " · 正在读取书目" : "";
     const cacheKB = (() => {
       try {
         const raw = localStorage.getItem(SYNC_CACHE_KEY);
@@ -4345,8 +4346,8 @@ const hostReady = (async function detectHost() {
     }
     markSyncRunning(false);
     try {
-      sessionStorage.setItem("desk-synced", "1");
-      sessionStorage.setItem("desk-sync-info", JSON.stringify({ mode: syncMode, calls, cacheSaved }));
+      if (!silentApply) sessionStorage.setItem("desk-synced", "1");
+      if (!silentApply) sessionStorage.setItem("desk-sync-info", JSON.stringify({ mode: syncMode, calls, cacheSaved }));
     } catch (e) {}
     location.reload();
   }
@@ -4429,6 +4430,7 @@ const hostReady = (async function detectHost() {
       if (typeof st.calls === "number") calls = st.calls;
       if (typeof st.books === "number") books = st.books;
       if (typeof st.totalBooks === "number") totalBooks = st.totalBooks;
+      if (typeof st.updatedBooks === "number") updatedBooks = st.updatedBooks;
       if (st.mode) syncMode = st.mode;
       paint();
       if (st.running) continue;
@@ -4541,6 +4543,7 @@ const hostReady = (async function detectHost() {
           const j = await r.json().catch(() => ({}));
           if (r.ok && j.data) {
             try { localStorage.setItem("desk-applied-at", String(st.finishedAt)); } catch (e) {}
+            silentApply = true;   // 后台完成的结果静默更新，不弹提示
             syncMode = j.data.syncMode || "增量";
             finish(j.data);
             return;
@@ -4548,7 +4551,7 @@ const hostReady = (async function detectHost() {
         }
         return;
       }
-      busy = true; t0 = Date.now(); calls = st.calls || 0; books = st.books || 0; totalBooks = st.totalBooks || 0; syncMode = st.mode || "进行中";
+      busy = true; t0 = Date.now(); calls = st.calls || 0; books = st.books || 0; totalBooks = st.totalBooks || 0; updatedBooks = st.updatedBooks || 0; syncMode = st.mode || "进行中";
       markSyncRunning(true);
       tick = setInterval(paint, 1000); paint();
       const data = await hostSyncWait();
