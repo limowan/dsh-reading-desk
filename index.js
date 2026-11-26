@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createSyncEngine } from './sync-engine.mjs'
@@ -49,17 +49,32 @@ async function fileSize(path) {
 }
 
 async function clearStoredKey() {
-  await rm(CONFIG_FILE, { force: true }).catch(() => {})
-  await clearSyncCacheFile()
+  await rm(CONFIG_FILE, { force: true })
 }
 
 const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
 
-/** 宿主侧同步任务：切面板/关页面都不会中断，页面只负责轮询与落盘。 */
+/** 宿主侧同步任务，独立于面板的生命周期。 */
 const SYNC_CACHE_FILE = join(STORE_DIR, 'sync-cache.json')
-const syncJob = {
-  running: false, startedAt: 0, finishedAt: 0,
-  calls: 0, books: 0, totalBooks: 0, updatedBooks: 0, mode: '', error: '', result: null, scope: '',
+const SYNC_CACHE_TEMP = SYNC_CACHE_FILE + '.tmp'
+let syncJob = null
+let syncStateQueue = Promise.resolve()
+
+// 只串行化任务登记、连接切换和缓存提交。逐书请求在锁外运行。
+function withSyncState(task) {
+  const turn = syncStateQueue.then(task)
+  syncStateQueue = turn.catch(() => {})
+  return turn
+}
+
+function syncScope(config) {
+  return config.cacheScope || (Number.isSafeInteger(config.updatedAt) ? String(config.updatedAt) : '')
+}
+
+function resetSyncJob() {
+  const previous = syncJob
+  syncJob = null
+  previous?.controller.abort()
 }
 
 async function readSyncCache(scope) {
@@ -73,68 +88,91 @@ async function readSyncCache(scope) {
 async function writeSyncCache(cache) {
   try {
     await mkdir(STORE_DIR, { recursive: true })
-    await writeFile(SYNC_CACHE_FILE, JSON.stringify(cache), { mode: 0o600 })
-  } catch {}
+    await writeFile(SYNC_CACHE_TEMP, JSON.stringify(cache), { mode: 0o600 })
+    await rename(SYNC_CACHE_TEMP, SYNC_CACHE_FILE)
+    return true
+  } catch {
+    await rm(SYNC_CACHE_TEMP, { force: true }).catch(() => {})
+    return false
+  }
 }
 
-async function clearSyncCacheFile() {
-  await rm(SYNC_CACHE_FILE, { force: true }).catch(() => {})
+async function clearSyncCacheFiles() {
+  await rm(SYNC_CACHE_FILE, { force: true })
+  await rm(SYNC_CACHE_TEMP, { force: true })
 }
 
-/** POST /sync/start：启动一次同步（已在跑则复用）。 */
+async function runSyncJob(job, key, previous, next) {
+  try {
+    const data = await createSyncEngine().run(key, (calls, books, totalBooks, updatedBooks) => {
+      Object.assign(job, { calls, books, totalBooks, updatedBooks })
+    }, { previous, next }, job.controller.signal)
+    await withSyncState(async () => {
+      // 换 Key 或断开后，即使旧任务仍返回结果，也不允许它回写。
+      if (syncJob !== job) return
+      job.cacheSaved = !!job.scope && await writeSyncCache(next)
+      data.syncMode = job.mode
+      job.result = data
+      job.finishedAt = Date.now()
+      job.running = false
+    })
+  } catch (error) {
+    if (syncJob === job) {
+      job.error = error?.message || String(error)
+      job.finishedAt = Date.now()
+      job.running = false
+    }
+  }
+}
+
+/** POST /sync/start：已有任务时返回同一个任务 ID。 */
 async function syncStartRoute(req, res) {
   if (req.method !== 'POST') return sendJson(res, 405, { errmsg: 'method not allowed' })
-  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls, books: syncJob.books, totalBooks: syncJob.totalBooks, mode: syncJob.mode })
-  const key = await readStoredKey()
-  if (key === '') return sendJson(res, 400, { errmsg: '还没有配置 API Key' })
+  const state = await withSyncState(async () => {
+    if (syncJob?.running) return { existing: syncJob }
 
-  const config = await readStoredConfig()
-  const scope = String(config.cacheScope || (Number.isSafeInteger(config.updatedAt) ? config.updatedAt : '') || '')
-  const previous = scope ? await readSyncCache(scope) : null
-  const next = { scope, progress: Object.create(null), notes: Object.create(null) }
-  const mode = previous ? '增量' : '全量'
+    const config = await readStoredConfig()
+    const key = typeof config.apiKey === 'string' ? config.apiKey : ''
+    if (!key) return null
 
-  Object.assign(syncJob, {
-    running: true, startedAt: Date.now(), finishedAt: 0,
-    calls: 0, books: 0, totalBooks: 0, updatedBooks: 0, mode, error: '', result: null, scope,
+    const scope = syncScope(config)
+    const previous = scope ? await readSyncCache(scope) : null
+    const next = { scope, progress: Object.create(null), notes: Object.create(null) }
+    const job = {
+      id: randomUUID(), controller: new AbortController(), scope,
+      running: true, finishedAt: 0, calls: 0, books: 0, totalBooks: 0, updatedBooks: 0,
+      mode: previous ? '增量' : '全量', error: '', result: null, cacheSaved: false,
+    }
+    syncJob = job
+    return { job, key, previous, next }
   })
-
-  const engine = createSyncEngine()
-  engine.run(key, (calls, books, totalBooks) => {
-      syncJob.calls = calls;
-      syncJob.books = books;
-      syncJob.totalBooks = totalBooks;
-    }, { previous, next })
-    .then(async data => {
-      data.syncMode = mode
-      syncJob.result = data
-      syncJob.finishedAt = Date.now()
-      if (scope) await writeSyncCache(next)
-    })
-    .catch(error => {
-      syncJob.error = error && error.message ? error.message : String(error)
-      syncJob.finishedAt = Date.now()
-      // 失败保留上一份缓存，但清掉没写完的副本
-    })
-    .finally(() => { syncJob.running = false })
-
-  return sendJson(res, 200, { started: true, mode })
+  if (!state) return sendJson(res, 400, { errmsg: '还没有配置 API Key' })
+  if (state.existing) {
+    const { id, mode } = state.existing
+    return sendJson(res, 409, { running: true, jobId: id, mode })
+  }
+  const { job, key, previous, next } = state
+  void runSyncJob(job, key, previous, next)
+  return sendJson(res, 200, { started: true, jobId: job.id, mode: job.mode })
 }
 
 /** GET /sync/status */
-async function syncStatusRoute(ctx, req, res) {
+async function syncStatusRoute(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  const cacheBytes = await syncCacheBytes()
+  const job = syncJob
   return sendJson(res, 200, {
-    running: syncJob.running,
-    calls: syncJob.calls,
-    books: syncJob.books,
-    totalBooks: syncJob.totalBooks,
-    updatedBooks: syncJob.updatedBooks,
-    mode: syncJob.mode,
-    error: syncJob.error,
-    finishedAt: syncJob.finishedAt,
-    ready: syncJob.result !== null,
-    cacheBytes: await syncCacheBytes(),
+    jobId: job?.id || '',
+    running: job?.running || false,
+    calls: job?.calls || 0,
+    books: job?.books || 0,
+    totalBooks: job?.totalBooks || 0,
+    updatedBooks: job?.updatedBooks || 0,
+    mode: job?.mode || '',
+    error: job?.error || '',
+    finishedAt: job?.finishedAt || 0,
+    ready: !!job?.result,
+    cacheBytes,
   })
 }
 
@@ -142,13 +180,16 @@ async function syncCacheBytes() {
   try { return (await fileSize(SYNC_CACHE_FILE)) || 0 } catch { return 0 }
 }
 
-/** GET /sync/result：取走本次结果（页面写入本地存储后自行保存）。 */
+/** GET /sync/result：返回当前任务的数据和连接标识。 */
 async function syncResultRoute(req, res) {
   if (req.method !== 'GET') return sendJson(res, 405, { errmsg: 'method not allowed' })
-  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls })
-  if (syncJob.error) return sendJson(res, 502, { errmsg: syncJob.error })
-  if (syncJob.result === null) return sendJson(res, 404, { errmsg: '还没有可用的同步结果' })
-  return sendJson(res, 200, { data: syncJob.result })
+  const job = syncJob
+  if (job?.running) return sendJson(res, 409, { running: true, jobId: job.id, calls: job.calls })
+  if (job?.error) return sendJson(res, 502, { errmsg: job.error })
+  if (!job?.result) return sendJson(res, 404, { errmsg: '还没有可用的同步结果' })
+  return sendJson(res, 200, {
+    data: job.result, jobId: job.id, scope: job.scope, finishedAt: job.finishedAt, cacheSaved: job.cacheSaved,
+  })
 }
 
 
@@ -248,7 +289,7 @@ export function apply(ctx) {
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: guard(configRoute) }), 'reading-desk: config')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync-config', handler: guard(syncConfigRoute) }), 'reading-desk: sync config')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/start', handler: guard(syncStartRoute) }), 'reading-desk: sync start')
-  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/status', handler: guard((req, res) => syncStatusRoute(ctx, req, res)) }), 'reading-desk: sync status')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/status', handler: guard(syncStatusRoute) }), 'reading-desk: sync status')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/result', handler: guard(syncResultRoute) }), 'reading-desk: sync result')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/flomo', handler: guard(pushRoute) }), 'reading-desk: push flomo')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/getnotes', handler: guard(pushRoute) }), 'reading-desk: push getnotes')
@@ -660,7 +701,7 @@ async function configRoute(req, res) {
   if (req.method === 'GET') {
     const config = await readStoredConfig()
     const key = typeof config.apiKey === 'string' ? config.apiKey : ''
-    const cacheScope = key ? (config.cacheScope || (Number.isSafeInteger(config.updatedAt) ? String(config.updatedAt) : '')) : ''
+    const cacheScope = key ? syncScope(config) : ''
     return sendJson(res, 200, { configured: key !== '', masked: maskKey(key), cacheScope })
   }
   if (req.method === 'POST') {
@@ -668,11 +709,31 @@ async function configRoute(req, res) {
     if (body === null) return sendJson(res, 400, { errmsg: '请求格式不对' })
     const key = String(body.key || '').trim()
     if (!KEY_RE.test(key)) return sendJson(res, 400, { errmsg: 'API Key 格式不对' })
-    await writeStoredKey(key)
-    return sendJson(res, 200, { configured: true, masked: maskKey(key) })
+    let changed
+    try {
+      changed = await withSyncState(async () => {
+        const config = await readStoredConfig()
+        if (config.apiKey === key && syncScope(config)) return false
+        await writeStoredKey(key)
+        resetSyncJob()
+        await clearSyncCacheFiles()
+        return true
+      })
+    } catch {
+      return sendJson(res, 500, { errmsg: '保存微信读书设置失败，请重试' })
+    }
+    return sendJson(res, 200, { configured: true, masked: maskKey(key), changed })
   }
   if (req.method === 'DELETE') {
-    await clearStoredKey()
+    try {
+      await withSyncState(async () => {
+        await clearStoredKey()
+        resetSyncJob()
+        await clearSyncCacheFiles()
+      })
+    } catch {
+      return sendJson(res, 500, { errmsg: '清除微信读书设置失败，请重试' })
+    }
     return sendJson(res, 200, { configured: false, masked: '' })
   }
   return sendJson(res, 405, { errmsg: 'method not allowed' })

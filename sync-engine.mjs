@@ -29,9 +29,9 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
   const SYNC_NOTE_RECHECK_INTERVAL = 24 * 60 * 60 * 1000
   const SYNC_NOTE_RECHECK_LIMIT = 5
 
-  async function run(key, step, syncCache = null) {
+  async function run(key, step, syncCache = null, cancellation = null) {
     const controller = new AbortController();
-    const { signal } = controller;
+    const signal = cancellation ? AbortSignal.any([controller.signal, cancellation]) : controller.signal;
     const sleep = ms => new Promise((resolve, reject) => {
       signal.throwIfAborted();
       const abort = () => { clearTimeout(timer); reject(signal.reason); };
@@ -78,14 +78,18 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
         return old.value;
       }
       const fresh = await fetchValue();
-      updatedBooks++;                 // 真正发生网络请求（缓存未命中或轮换补查）
+      updatedBooks.add(id);
       report();
       next[type][id] = { signature, value: fresh, at: Date.now() };
       return fresh;
     }
     let calls = 0, requestQueue = Promise.resolve();
-    let doneBooks = 0, totalBooks = 0, updatedBooks = 0;
-    const report = () => { if (step) step(calls, doneBooks, totalBooks, updatedBooks); };
+    const checkedBooks = new Set(), totalBooks = new Set(), updatedBooks = new Set();
+    const report = () => { if (step) step(calls, checkedBooks.size, totalBooks.size, updatedBooks.size); };
+    function checked(id) {
+      checkedBooks.add(id);
+      report();
+    }
     function dispatch(body) {
       let response;
       const turn = requestQueue.then(async () => {
@@ -219,8 +223,12 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
       readSecs[b.bookId] = p.readSecs;
       return p;
     };
-    totalBooks += thisYear.length;
-    const yearProgress = await pmap(thisYear, 2, async b => { const r = await getProg(b); doneBooks++; report(); return r; });
+    thisYear.forEach(b => totalBooks.add(String(b.bookId)));
+    const yearProgress = await pmap(thisYear, 2, async b => {
+      const p = await getProg(b);
+      checked(String(b.bookId));
+      return p;
+    });
     thisYear.forEach((b, i) => {
       const p = yearProgress[i], id = String(b.bookId);
       if (p.progress === 100 && p.finishTime) finishMonth[id] = ymOf(p.finishTime);
@@ -251,8 +259,12 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
     const dim = new Date(Y, M, 0).getDate();
     const plan = [];
     for (const [i, b] of reading.slice(0, 8).entries()) {
-      if (!(b.bookId in progress)) await getProg(b);
       const s = 1 + i * 3, id = String(b.bookId);
+      if (!(b.bookId in progress)) {
+        totalBooks.add(id);
+        await getProg(b);
+        checked(id);
+      }
       plan.push(cardOf(b, { target: progress[b.bookId] >= 50 ? "读完" : "继续读", progress: Math.round(progress[b.bookId]) / 100,
         hours: Math.round(readSecs[b.bookId] / 360) / 10, monthMin: Math.round((monthSecs[id] || 0) / 60),
         dayStart: Math.min(s, dim), dayEnd: Math.min(s + 8, dim), band: i % 4 }));
@@ -300,7 +312,7 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
       .slice(0, SYNC_NOTE_RECHECK_LIMIT)
       .map(({ id }) => id));
     const highlights = {};
-    totalBooks += noteTargets.length;
+    noteTargets.forEach(({ id }) => totalBooks.add(id));
     await pmap(noteTargets, 2, async ({ id: bid, signature }) => {
       const { reviews, marks } = await cached("notes", bid, signature, async () => {
         const response = await api("/review/list/mine", { bookid: bid, count: 50 });
@@ -325,9 +337,8 @@ export function createSyncEngine({ fetchImpl = globalThis.fetch, gateway = GATEW
           .map(x => ({ text: x.markText.trim(), note: "", date: ymdOf(x.createTime || 0), chapter: chaps[x.chapterUid] || "" })),
       ];
       const seen = new Set(), uniq = lines.filter(l => !seen.has(l.text) && seen.add(l.text)).slice(0, 8);
-      if (!uniq.length) { doneBooks++; report(); return; }
-      highlights[bid] = { ...uniq[0], more: uniq.slice(1) };
-      doneBooks++; report();
+      if (uniq.length) highlights[bid] = { ...uniq[0], more: uniq.slice(1) };
+      checked(bid);
     });
     const cards = [];
     // 回顾卡：有想法的划线优先，不够 12 张再用普通划线补

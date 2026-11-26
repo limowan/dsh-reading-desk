@@ -4281,7 +4281,6 @@ const hostReady = (async function detectHost() {
   const live = !D.sample;
   const synced = live ? (D.syncedAt || ((D.source || "").match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) || [])[1] || "") : "";
   const baseLabel = live ? `微信读书 · ${synced.slice(5)}` : "微信读书";
-  let silentApply = false;
   let busy = false, t0 = 0, tick = 0, calls = 0, books = 0, totalBooks = 0, updatedBooks = 0, stepText = "", lastErr = "", local = null;
   let syncMode = "未同步";
   const lastMode = (() => {
@@ -4328,26 +4327,31 @@ const hostReady = (async function detectHost() {
     } catch (e) {}
     return null;
   }
+  function clearReadingSnapshot() {
+    localStorage.removeItem("desk-data");
+    localStorage.removeItem("desk-applied-at");
+  }
   function markSyncRunning(running) {
     try {
       if (running) sessionStorage.setItem("desk-sync-running", "1");
       else sessionStorage.removeItem("desk-sync-running");
     } catch (e) {}
   }
-  function finish(data, cache = null) {
+  function finish(data, { silent = false, jobId = "", finishedAt = Date.now(), cacheSaved = true } = {}) {
     data.syncMode = syncMode;
+    if (jobId) data.syncJobId = jobId;
     try { localStorage.setItem("desk-data", JSON.stringify(data)); }
     catch (e) { throw new Error("浏览器存储空间不够"); }
-    try { localStorage.setItem("desk-applied-at", String(Date.now())); } catch (e) {}
-    let cacheSaved = true;
-    if (cache) {
-      try { localStorage.setItem(SYNC_CACHE_KEY, JSON.stringify(cache)); }
-      catch (e) { cacheSaved = false; }
-    }
+    try { localStorage.setItem("desk-applied-at", String(finishedAt)); } catch (e) {}
     markSyncRunning(false);
     try {
-      if (!silentApply) sessionStorage.setItem("desk-synced", "1");
-      if (!silentApply) sessionStorage.setItem("desk-sync-info", JSON.stringify({ mode: syncMode, calls, cacheSaved }));
+      if (silent) {
+        sessionStorage.removeItem("desk-synced");
+        sessionStorage.removeItem("desk-sync-info");
+      } else {
+        sessionStorage.setItem("desk-synced", "1");
+        sessionStorage.setItem("desk-sync-info", JSON.stringify({ cacheSaved }));
+      }
     } catch (e) {}
     location.reload();
   }
@@ -4394,7 +4398,10 @@ const hostReady = (async function detectHost() {
         }
         const r = await w.json();
         HOST.configured = true; HOST.masked = r.masked || "";
-        clearSyncCache();
+        if (r.changed !== false) {
+          clearReadingSnapshot();
+          clearSyncCache();
+        }
         localStorage.removeItem("desk-wrkey");
       }
     } else {
@@ -4413,32 +4420,57 @@ const hostReady = (async function detectHost() {
       if (!started.ok && started.status !== 409) {
         throw new Error(info.errmsg || `启动同步失败（${started.status}）`);
       }
+      if (!info.jobId) throw new Error("请重新打开 DeepSeek Harness 后再同步");
       if (info.mode) syncMode = info.mode;
-      finish(await hostSyncWait());
+      const result = await hostSyncWait(info.jobId);
+      await applyHostResult(result);
     } else {
       finish(local ? await viaLocal(key || saved()) : await WEREAD.run(key, onStep));
     }
   }
-  /* 轮询宿主同步状态，完成后取回结果 */
-  async function hostSyncWait() {
+  async function readHostSync(path) {
+    const r = await fetch("/plugin/reading-desk/sync/" + path, {
+      headers: { accept: "application/json" }, cache: "no-store",
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok || !data) throw new Error(data?.errmsg || "无法读取宿主的同步" + (path === "status" ? "状态" : "结果"));
+    return data;
+  }
+  function showHostProgress(status) {
+    ({ calls, books, totalBooks, updatedBooks } = status);
+    if (status.mode) syncMode = status.mode;
+    paint();
+  }
+  async function readHostResult(jobId) {
+    const result = await readHostSync("result");
+    if (!result.data || result.jobId !== jobId) throw new Error("同步任务已变更，请重新同步");
+    return result;
+  }
+  async function applyHostResult(result, silent = false) {
+    const current = await WEREAD.readWereadConfig();
+    if (!current.configured || current.cacheScope !== result.scope) {
+      throw new Error("微信读书连接已变更，请重新同步");
+    }
+    syncMode = result.data.syncMode || syncMode;
+    finish(result.data, { ...result, silent });
+  }
+  async function hostSyncWait(jobId) {
+    let failedPolls = 0;
     for (;;) {
       await new Promise(r => setTimeout(r, 800));
-      let st = null;
+      let status;
       try {
-        st = await (await fetch("/plugin/reading-desk/sync/status", { headers: { accept: "application/json" }, cache: "no-store" })).json();
-      } catch (e) { continue; }
-      if (typeof st.calls === "number") calls = st.calls;
-      if (typeof st.books === "number") books = st.books;
-      if (typeof st.totalBooks === "number") totalBooks = st.totalBooks;
-      if (typeof st.updatedBooks === "number") updatedBooks = st.updatedBooks;
-      if (st.mode) syncMode = st.mode;
-      paint();
-      if (st.running) continue;
-      if (st.error) throw new Error(st.error);
-      const r = await fetch("/plugin/reading-desk/sync/result", { headers: { accept: "application/json" }, cache: "no-store" });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.data) throw new Error(j.errmsg || "读取同步结果失败");
-      return j.data;
+        status = await readHostSync("status");
+        failedPolls = 0;
+      } catch (e) {
+        if (++failedPolls >= 3) throw e;
+        continue;
+      }
+      if (status.jobId !== jobId) throw new Error("同步任务已变更，请重新同步");
+      showHostProgress(status);
+      if (status.running) continue;
+      if (status.error) throw new Error(status.error);
+      return readHostResult(jobId);
     }
   }
 
@@ -4512,7 +4544,8 @@ const hostReady = (async function detectHost() {
           const response = await fetch("/plugin/reading-desk/config", { method: "DELETE" });
           if (!response.ok) throw new Error("断开失败，请重试");
         }
-        localStorage.removeItem("desk-wrkey"); localStorage.removeItem("desk-data");
+        localStorage.removeItem("desk-wrkey");
+        clearReadingSnapshot();
         clearSyncCache();
         if (local) fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ forget: true }) }).catch(() => {});
         location.reload();
@@ -4529,35 +4562,40 @@ const hostReady = (async function detectHost() {
   $("#dsrc").onclick = open;
   const wasSyncing = sessionStorage.getItem("desk-sync-running");
   markSyncRunning(false);
-  /* 打开页面时如果宿主仍在同步（比如刚才切走了），自动接上进度 */
+  /* 返回面板时静默接续。只有当前页面的手动同步才提示成功。 */
   (async function resumeRunning() {
+    let following = false;
     try {
-      await WEREAD.hostReady;      // 必须等探测完成，HOST.mode 才可能是 true
-      if (!HOST.mode) return;
-      const st = await (await fetch("/plugin/reading-desk/sync/status", { headers: { accept: "application/json" }, cache: "no-store" })).json();
+      await WEREAD.hostReady;
+      if (!HOST.mode || !HOST.configured || busy) return;
+      const status = await readHostSync("status");
+      if (busy) return;
+      if (status.error) throw new Error(status.error);
       const appliedAt = Number(localStorage.getItem("desk-applied-at") || 0);
-      if (!st.running) {
-        /* 同步在别处跑完了：如果比本地数据新，就自动更新一次 */
-        if (st.ready && st.finishedAt > appliedAt) {
-          const r = await fetch("/plugin/reading-desk/sync/result", { headers: { accept: "application/json" }, cache: "no-store" });
-          const j = await r.json().catch(() => ({}));
-          if (r.ok && j.data) {
-            try { localStorage.setItem("desk-applied-at", String(st.finishedAt)); } catch (e) {}
-            silentApply = true;   // 后台完成的结果静默更新，不弹提示
-            syncMode = j.data.syncMode || "增量";
-            finish(j.data);
-            return;
-          }
+      const hasNewResult = status.ready && status.jobId !== D.syncJobId && status.finishedAt > appliedAt;
+      if (!status.running && !hasNewResult) {
+        if (wasSyncing && !status.jobId) {
+          lastErr = "上次同步没有在宿主完成，请重新点同步";
+          paint();
         }
         return;
       }
-      busy = true; t0 = Date.now(); calls = st.calls || 0; books = st.books || 0; totalBooks = st.totalBooks || 0; updatedBooks = st.updatedBooks || 0; syncMode = st.mode || "进行中";
+      if (!status.jobId) throw new Error("请重新打开 DeepSeek Harness 后再同步");
+      following = true;
+      busy = true; t0 = Date.now();
+      showHostProgress(status);
       markSyncRunning(true);
-      tick = setInterval(paint, 1000); paint();
-      const data = await hostSyncWait();
-      finish(data);
+      tick = setInterval(paint, 1000);
+      const result = status.running ? await hostSyncWait(status.jobId) : await readHostResult(status.jobId);
+      await withSyncLock(() => applyHostResult(result, true));
     } catch (e) {
-      busy = false; clearInterval(tick); paint();
+      if (following || !busy && wasSyncing) lastErr = e.message || "读取后台同步失败";
+    } finally {
+      if (following) {
+        markSyncRunning(false);
+        busy = false; clearInterval(tick);
+      }
+      if (!busy) paint();
     }
   })();
 
@@ -4568,10 +4606,6 @@ const hostReady = (async function detectHost() {
     const msg = "同步成功";
     const notice = info?.cacheSaved === false ? "同步完成，但缓存没存下来，下次可能重新拉取" : msg;
     setTimeout(() => toast(notice), 600);
-  } else if (wasSyncing) {
-    const notice = "上次同步在离开读书台时中断，请重新点同步";
-    lastErr = notice;
-    setTimeout(() => { if (lastErr === notice) toast(notice); }, 600);
   }
 })();
 
