@@ -8,9 +8,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { createSyncEngine } from './sync-engine.mjs'
 import { dirname, extname, join, normalize } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -42,11 +43,107 @@ async function writeStoredKey(key) {
   await writeFile(CONFIG_FILE, JSON.stringify({ ...config, apiKey: key, updatedAt: Date.now(), cacheScope: randomUUID() }, null, 2), { mode: 0o600 })
 }
 
+async function fileSize(path) {
+  const info = await stat(path)
+  return info.size
+}
+
 async function clearStoredKey() {
   await rm(CONFIG_FILE, { force: true }).catch(() => {})
+  await clearSyncCacheFile()
 }
 
 const maskKey = key => (KEY_RE.test(key) ? `wrk-****${key.slice(-4)}` : '')
+
+/** 宿主侧同步任务：切面板/关页面都不会中断，页面只负责轮询与落盘。 */
+const SYNC_CACHE_FILE = join(STORE_DIR, 'sync-cache.json')
+const syncJob = {
+  running: false, startedAt: 0, finishedAt: 0,
+  calls: 0, mode: '', error: '', result: null, scope: '',
+}
+
+async function readSyncCache(scope) {
+  try {
+    const cache = JSON.parse(await readFile(SYNC_CACHE_FILE, 'utf8'))
+    if (cache.scope === scope && cache.progress && cache.notes) return cache
+  } catch {}
+  return null
+}
+
+async function writeSyncCache(cache) {
+  try {
+    await mkdir(STORE_DIR, { recursive: true })
+    await writeFile(SYNC_CACHE_FILE, JSON.stringify(cache), { mode: 0o600 })
+  } catch {}
+}
+
+async function clearSyncCacheFile() {
+  await rm(SYNC_CACHE_FILE, { force: true }).catch(() => {})
+}
+
+/** POST /sync/start：启动一次同步（已在跑则复用）。 */
+async function syncStartRoute(req, res) {
+  if (req.method !== 'POST') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls, mode: syncJob.mode })
+  const key = await readStoredKey()
+  if (key === '') return sendJson(res, 400, { errmsg: '还没有配置 API Key' })
+
+  const config = await readStoredConfig()
+  const scope = String(config.cacheScope || (Number.isSafeInteger(config.updatedAt) ? config.updatedAt : '') || '')
+  const previous = scope ? await readSyncCache(scope) : null
+  const next = { scope, progress: Object.create(null), notes: Object.create(null) }
+  const mode = previous ? '增量' : '全量'
+
+  Object.assign(syncJob, {
+    running: true, startedAt: Date.now(), finishedAt: 0,
+    calls: 0, mode, error: '', result: null, scope,
+  })
+
+  const engine = createSyncEngine()
+  engine.run(key, calls => { syncJob.calls = calls; }, { previous, next })
+    .then(async data => {
+      data.syncMode = mode
+      syncJob.result = data
+      syncJob.finishedAt = Date.now()
+      if (scope) await writeSyncCache(next)
+    })
+    .catch(error => {
+      syncJob.error = error && error.message ? error.message : String(error)
+      syncJob.finishedAt = Date.now()
+      // 失败保留上一份缓存，但清掉没写完的副本
+    })
+    .finally(() => { syncJob.running = false })
+
+  return sendJson(res, 200, { started: true, mode })
+}
+
+/** GET /sync/status */
+async function syncStatusRoute(ctx, req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  return sendJson(res, 200, {
+    running: syncJob.running,
+    calls: syncJob.calls,
+    mode: syncJob.mode,
+    error: syncJob.error,
+    finishedAt: syncJob.finishedAt,
+    ready: syncJob.result !== null,
+    cacheBytes: await syncCacheBytes(),
+  })
+}
+
+async function syncCacheBytes() {
+  try { return (await fileSize(SYNC_CACHE_FILE)) || 0 } catch { return 0 }
+}
+
+/** GET /sync/result：取走本次结果（页面写入本地存储后自行保存）。 */
+async function syncResultRoute(req, res) {
+  if (req.method !== 'GET') return sendJson(res, 405, { errmsg: 'method not allowed' })
+  if (syncJob.running) return sendJson(res, 409, { running: true, calls: syncJob.calls })
+  if (syncJob.error) return sendJson(res, 502, { errmsg: syncJob.error })
+  if (syncJob.result === null) return sendJson(res, 404, { errmsg: '还没有可用的同步结果' })
+  return sendJson(res, 200, { data: syncJob.result })
+}
+
 
 /** Only the read-only endpoints the page actually calls. */
 const ALLOWED = new Set([
@@ -143,6 +240,9 @@ export function apply(ctx) {
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/weread', handler: guard(proxyHandler) }), 'reading-desk: weread')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/config', handler: guard(configRoute) }), 'reading-desk: config')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync-config', handler: guard(syncConfigRoute) }), 'reading-desk: sync config')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/start', handler: guard(syncStartRoute) }), 'reading-desk: sync start')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/status', handler: guard((req, res) => syncStatusRoute(ctx, req, res)) }), 'reading-desk: sync status')
+  ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/sync/result', handler: guard(syncResultRoute) }), 'reading-desk: sync result')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/flomo', handler: guard(pushRoute) }), 'reading-desk: push flomo')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/push/getnotes', handler: guard(pushRoute) }), 'reading-desk: push getnotes')
   ctx.effect(() => server.register({ kind: 'exact', path: PREFIX + '/ai/chat', handler: guard((req, res) => aiChat(ctx, req, res)) }), 'reading-desk: ai chat')

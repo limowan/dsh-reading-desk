@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5]
+
+- Sync now runs in the host process instead of the panel iframe: switching panels, closing the tab or reloading no longer aborts a sync. The page starts the job, polls progress and writes the finished dataset.
+- The incremental cache moved to the host (`~/.dsh/storages/dsh-reading-desk/sync-cache.json`, mode 0600, cleared when the API key changes), so a sync started in one place finishes for every panel.
+- Returning to the panel mid-sync shows live progress; returning after it finished applies the newer dataset automatically.
+- Host sync is paced the same way as before (scheduled request starts, `-202` cooldown) and keeps the same error hints.
+
+
 ## [0.1.4]
 
 - Incremental sync: the shelf, monthly/annual reading stats and the notebook overview are still fetched every time, but per-book progress, thoughts and highlights are only re-requested when their metadata changed, missing from the cache, or older than 24 hours. Key changes reset the cache scope so data from another account cannot leak in.

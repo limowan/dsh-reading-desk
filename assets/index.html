@@ -3909,7 +3909,8 @@ const PERSONA = (function () {
    - 口径与 fetch_live.py 一致，两边改动要同步
    ================================================================ */
 const SYNC_CACHE_KEY = "desk-sync-cache-v1";
-const SYNC_CACHE_TTL = 24 * 60 * 60 * 1000;
+const SYNC_NOTE_RECHECK_INTERVAL = 24 * 60 * 60 * 1000;
+const SYNC_NOTE_RECHECK_LIMIT = 5;
 const SYNC_GAP_MS = 120;                 // 每个网关请求之间的间隔，降低被限流的概率
 const ERR_HINT = {
   "-2013": "API Key 无效或已过期",
@@ -3991,18 +3992,21 @@ const hostReady = (async function detectHost() {
     const previous = syncCache?.previous;
     const next = syncCache?.next;
     const startedAt = Date.now();
-    async function cached(type, id, signature, fetchValue) {
-      if (!next) return fetchValue();
+    function matchingCache(type, id, signature) {
       const records = previous?.[type];
       const old = records && Object.hasOwn(records, id) ? records[id] : null;
       const value = old?.value;
       const valid = type === "progress"
         ? Number.isFinite(value?.progress) && Number.isFinite(value.readSecs) && Number.isFinite(value.finishTime)
         : Array.isArray(value?.reviews) && Array.isArray(value.marks?.chapters) && Array.isArray(value.marks?.updated);
-      if (valid && old.signature === signature &&
-          Number.isFinite(old.at) && old.at <= startedAt && startedAt - old.at < SYNC_CACHE_TTL) {
+      return valid && old.signature === signature && Number.isFinite(old.at) && old.at <= startedAt ? old : null;
+    }
+    async function cached(type, id, signature, fetchValue, recheck = false) {
+      if (!next) return fetchValue();
+      const old = recheck ? null : matchingCache(type, id, signature);
+      if (old) {
         next[type][id] = old;
-        return value;
+        return old.value;
       }
       const fresh = await fetchValue();
       next[type][id] = { signature, value: fresh, at: Date.now() };
@@ -4210,10 +4214,19 @@ const hostReady = (async function detectHost() {
 
     const targets = [...new Set([...walls.flatMap(w => w.items.map(x => x.bookId)).filter(id => notebooks.has(id)),
       ...[...notebooks.keys()].slice(0, 12)])];
-    const highlights = {};
-    await pmap(targets, 2, async bid => {
-      const notebook = notebooks.get(bid);
+    const noteTargets = targets.map(id => {
+      const notebook = notebooks.get(id);
       const signature = JSON.stringify([notebook.sort, notebook.reviewCount, notebook.noteCount]);
+      return { id, signature, old: matchingCache("notes", id, signature) };
+    });
+    // 时间只决定补查顺序，缺缓存或签名变化的书照常更新。
+    const recheckNotes = new Set(noteTargets
+      .filter(({ old }) => old && startedAt - old.at >= SYNC_NOTE_RECHECK_INTERVAL)
+      .sort((a, b) => a.old.at - b.old.at)
+      .slice(0, SYNC_NOTE_RECHECK_LIMIT)
+      .map(({ id }) => id));
+    const highlights = {};
+    await pmap(noteTargets, 2, async ({ id: bid, signature }) => {
       const { reviews, marks } = await cached("notes", bid, signature, async () => {
         const response = await api("/review/list/mine", { bookid: bid, count: 50 });
         if (next && !Array.isArray(response.reviews) && !(response.reviews == null && response.totalCount === 0)) {
@@ -4225,7 +4238,7 @@ const hostReady = (async function detectHost() {
           throw new Error("微信读书返回的划线数据不完整，请重试");
         }
         return { reviews: response.reviews || [], marks: { chapters: marks.chapters || [], updated: marks.updated || [] } };
-      });
+      }, recheckNotes.has(bid));
       const thoughts = reviews.map(r => r.review || {}).filter(r => (r.abstract || "").trim() && (r.content || "").trim());
       const chaps = Object.fromEntries((marks.chapters || []).map(c => [c.chapterUid, c.title || ""]));
       const near60 = t => Math.abs(t.length - 60);
@@ -4278,7 +4291,7 @@ const hostReady = (async function detectHost() {
   const saved = () => localStorage.getItem("desk-wrkey") || "";
   if (location.port === "8977") fetch("/api/sync").then(r => r.ok ? r.json() : null).then(j => { local = j; }).catch(() => {});
 
-  const isOpen = () => !!$("#wrKey");
+  const isOpen = () => !!$("#wrKey") && $("#modal").classList.contains("on");
   function paint() {
     $("#dsrcText").textContent = busy ? "同步中…" : baseLabel;
     if (!isOpen()) return;
@@ -4314,15 +4327,23 @@ const hostReady = (async function detectHost() {
     } catch (e) {}
     return null;
   }
+  function markSyncRunning(running) {
+    try {
+      if (running) sessionStorage.setItem("desk-sync-running", "1");
+      else sessionStorage.removeItem("desk-sync-running");
+    } catch (e) {}
+  }
   function finish(data, cache = null) {
     data.syncMode = syncMode;
     try { localStorage.setItem("desk-data", JSON.stringify(data)); }
     catch (e) { throw new Error("浏览器存储空间不够"); }
+    try { localStorage.setItem("desk-applied-at", String(Date.now())); } catch (e) {}
     let cacheSaved = true;
     if (cache) {
       try { localStorage.setItem(SYNC_CACHE_KEY, JSON.stringify(cache)); }
       catch (e) { cacheSaved = false; }
     }
+    markSyncRunning(false);
     try {
       sessionStorage.setItem("desk-synced", "1");
       sessionStorage.setItem("desk-sync-info", JSON.stringify({ mode: syncMode, calls, cacheSaved }));
@@ -4345,67 +4366,78 @@ const hostReady = (async function detectHost() {
       return JSON.parse(txt.slice(txt.indexOf("=") + 1, txt.lastIndexOf(";")));
     }
   }
-  async function runSync() {
-    const v = $("#wrKey").value.trim();
-    let key = "";
+  async function runSync(input, entered) {
+    const chosen = entered || (HOST.mode ? "" : saved());
+    if (!chosen && (!HOST.mode || !HOST.configured)) {
+      if (isOpen() && $("#wrKey") === input) input.focus();
+      throw new Error("先填写 API Key");
+    }
+    if (chosen && !KEY_RE.test(chosen)) {
+      if (isOpen() && $("#wrKey") === input) {
+        input.classList.add("bad");
+        input.focus();
+      }
+      throw new Error(chosen.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头");
+    }
 
     if (HOST.mode) {
       /* 插件形态：Key 交给宿主保管，页面不存明文 */
-      if (v) {
-        if (!KEY_RE.test(v)) {
-          $("#wrErr").textContent = v.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头";
-          $("#wrKey").classList.add("bad"); $("#wrKey").focus(); return;
-        }
+      if (chosen) {
         const w = await fetch("/plugin/reading-desk/config", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: v }),
+          body: JSON.stringify({ key: chosen }),
         });
         if (!w.ok) {
           const j = await w.json().catch(() => ({}));
-          $("#wrErr").textContent = j.errmsg || "保存 Key 失败";
-          return;
+          throw new Error(j.errmsg || "保存 Key 失败");
         }
         const r = await w.json();
         HOST.configured = true; HOST.masked = r.masked || "";
         clearSyncCache();
         localStorage.removeItem("desk-wrkey");
-        $("#wrKey").value = "";
-      } else if (!HOST.configured) {
-        $("#wrErr").textContent = "先填写 API Key"; $("#wrKey").focus(); return;
       }
     } else {
-      const chosen = v || saved();
-      if (!chosen) { $("#wrErr").textContent = "先填写 API Key"; $("#wrKey").focus(); return; }
-      if (!KEY_RE.test(chosen)) {
-        $("#wrErr").textContent = chosen.startsWith("wrk-") ? "Key 格式不对" : "Key 应以 wrk- 开头";
-        $("#wrKey").classList.add("bad"); $("#wrKey").focus(); return;
-      }
       localStorage.setItem("desk-wrkey", chosen);
-      key = chosen;
-      $("#wrKey").value = "";
     }
+    input.value = "";
+    const key = HOST.mode ? "" : chosen;
 
     const onStep = n => { calls = n; };
     if (HOST.mode) {
-      const config = await WEREAD.readWereadConfig();
-      if (!config.configured) throw new Error("请重新填写 API Key");
-      const scope = config.cacheScope;
-      if (typeof scope !== "string" || !scope) {
-        throw new Error("插件宿主还没有加载增量同步，请彻底退出并重新打开 DeepSeek Harness，再点同步");
+      /* 同步跑在宿主进程里：页面切走、关掉都不会中断，这里只负责启动、轮询、落盘 */
+      const started = await fetch("/plugin/reading-desk/sync/start", {
+        method: "POST", headers: { accept: "application/json" },
+      });
+      const info = await started.json().catch(() => ({}));
+      if (!started.ok && started.status !== 409) {
+        throw new Error(info.errmsg || `启动同步失败（${started.status}）`);
       }
-      const next = { scope, progress: Object.create(null), notes: Object.create(null) };
-      const previous = readSyncCache(scope);
-      syncMode = previous ? "增量" : "全量";
-      const data = await WEREAD.run(key, onStep, { previous, next });
-      const current = await WEREAD.readWereadConfig();
-      if (!current.configured || current.cacheScope !== scope) {
-        throw new Error("微信读书连接已变更，请重新同步");
-      }
-      finish(data, next);
+      if (info.mode) syncMode = info.mode;
+      finish(await hostSyncWait());
     } else {
       finish(local ? await viaLocal(key || saved()) : await WEREAD.run(key, onStep));
     }
   }
+  /* 轮询宿主同步状态，完成后取回结果 */
+  async function hostSyncWait() {
+    for (;;) {
+      await new Promise(r => setTimeout(r, 800));
+      let st = null;
+      try {
+        st = await (await fetch("/plugin/reading-desk/sync/status", { headers: { accept: "application/json" }, cache: "no-store" })).json();
+      } catch (e) { continue; }
+      if (typeof st.calls === "number") calls = st.calls;
+      if (st.mode) syncMode = st.mode;
+      paint();
+      if (st.running) continue;
+      if (st.error) throw new Error(st.error);
+      const r = await fetch("/plugin/reading-desk/sync/result", { headers: { accept: "application/json" }, cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.data) throw new Error(j.errmsg || "读取同步结果失败");
+      return j.data;
+    }
+  }
+
   function withSyncLock(task) {
     if (!HOST.mode || !navigator.locks) return task();
     return navigator.locks.request("reading-desk-sync", { ifAvailable: true }, lock => {
@@ -4414,21 +4446,24 @@ const hostReady = (async function detectHost() {
     });
   }
   async function sync() {
-    if (busy) return;
+    if (busy || !isOpen()) return;
+    const input = $("#wrKey"), entered = input.value.trim();
     $("#wrErr").textContent = ""; lastErr = "";
     busy = true; t0 = Date.now(); calls = 0; stepText = ""; paint();
+    markSyncRunning(true);
     tick = setInterval(paint, 1000);
     try {
       await WEREAD.hostReady;
       if (location.pathname.startsWith("/plugin/reading-desk/") && !HOST.mode) {
         throw new Error("暂时无法读取插件的微信读书设置，请刷新页面后重试");
       }
-      await withSyncLock(() => runSync());
+      await withSyncLock(() => runSync(input, entered));
     } catch (e) {
       lastErr = e.message || "同步失败";
       if (isOpen()) $("#wrErr").textContent = lastErr;
-      else toast("同步失败，点顶栏重试");
+      else toast(lastErr);
     } finally {
+      markSyncRunning(false);
       busy = false; clearInterval(tick);
       paint();
     }
@@ -4488,6 +4523,39 @@ const hostReady = (async function detectHost() {
     setTimeout(() => inp.focus(), 80);
   }
   $("#dsrc").onclick = open;
+  const wasSyncing = sessionStorage.getItem("desk-sync-running");
+  markSyncRunning(false);
+  /* 打开页面时如果宿主仍在同步（比如刚才切走了），自动接上进度 */
+  (async function resumeRunning() {
+    try {
+      await WEREAD.hostReady;      // 必须等探测完成，HOST.mode 才可能是 true
+      if (!HOST.mode) return;
+      const st = await (await fetch("/plugin/reading-desk/sync/status", { headers: { accept: "application/json" }, cache: "no-store" })).json();
+      const appliedAt = Number(localStorage.getItem("desk-applied-at") || 0);
+      if (!st.running) {
+        /* 同步在别处跑完了：如果比本地数据新，就自动更新一次 */
+        if (st.ready && st.finishedAt > appliedAt) {
+          const r = await fetch("/plugin/reading-desk/sync/result", { headers: { accept: "application/json" }, cache: "no-store" });
+          const j = await r.json().catch(() => ({}));
+          if (r.ok && j.data) {
+            try { localStorage.setItem("desk-applied-at", String(st.finishedAt)); } catch (e) {}
+            syncMode = j.data.syncMode || "增量";
+            finish(j.data);
+            return;
+          }
+        }
+        return;
+      }
+      busy = true; t0 = Date.now(); calls = st.calls || 0; syncMode = st.mode || "进行中";
+      markSyncRunning(true);
+      tick = setInterval(paint, 1000); paint();
+      const data = await hostSyncWait();
+      finish(data);
+    } catch (e) {
+      busy = false; clearInterval(tick); paint();
+    }
+  })();
+
   if (sessionStorage.getItem("desk-synced")) {
     sessionStorage.removeItem("desk-synced");
     let info = null; try { info = JSON.parse(sessionStorage.getItem("desk-sync-info") || "null"); } catch (e) {}
@@ -4495,6 +4563,10 @@ const hostReady = (async function detectHost() {
     const msg = info ? `同步完成 · ${info.mode} · ${info.calls} 次请求` : "同步完成";
     const notice = info?.cacheSaved === false ? "同步完成，但缓存没存下来，下次可能重新拉取" : msg;
     setTimeout(() => toast(notice), 600);
+  } else if (wasSyncing) {
+    const notice = "上次同步在离开读书台时中断，请重新点同步";
+    lastErr = notice;
+    setTimeout(() => { if (lastErr === notice) toast(notice); }, 600);
   }
 })();
 
