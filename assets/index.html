@@ -481,17 +481,24 @@ body[data-theme="bookstore"]{--sheet:#efe6d2;--sheet-edge:#d9cfb9}
 .dmeta dd{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dmeta dd.num{font-family:var(--mono)}
 .dsheet .label{margin-top:14px;font-size:13px;color:var(--soft);letter-spacing:.25em}
-.dbody{flex:1;min-height:0;display:flex;flex-direction:column}
-.dquote{margin-top:8px;font-family:var(--serif);font-weight:700;font-size:26px;line-height:1.7;letter-spacing:.02em}
-.dnote{margin-top:6px;padding-left:12px;border-left:2px solid var(--kraft-dark);font-size:16px;line-height:1.75;color:var(--soft)}
+.dbody{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.dbody.scroll{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.dquote{margin-top:8px;font-family:var(--serif);font-weight:700;font-size:26px;line-height:1.7;letter-spacing:.02em;
+  flex:1 1 auto;min-height:52px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.dnote{flex-shrink:0;margin-top:6px;padding-left:12px;border-left:2px solid var(--kraft-dark);font-size:16px;line-height:1.75;color:var(--soft)}
 .dnote.mine{border-left-color:var(--stamp)}
 .dnote .when{display:block;font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px}
-.redo textarea{width:100%;margin-top:6px;resize:none;height:58px;background:transparent;border:0;border-bottom:1px dashed var(--soft);
+.redo{}
+.redo{flex-shrink:0}
+.redo textarea{width:100%;margin-top:6px;resize:none;height:58px;flex-shrink:0;background:transparent;border:0;border-bottom:1px dashed var(--soft);
   font-family:var(--hand);font-size:16px;line-height:1.6;color:var(--ink);outline:none}
 .redo textarea::placeholder{color:var(--faint)}
 .redo button{margin-top:6px;border:1px solid var(--ink);background:transparent;font-size:13px;letter-spacing:.2em;padding:5px 12px;cursor:pointer}
 .redo button:hover{background:var(--ink);color:var(--sheet)}
-.dfoot{margin-top:auto;padding-top:12px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:flex-end}
+.dbody.tight .label{margin-top:8px}
+.dbody.tight .dnote{font-size:14px;line-height:1.6;margin-top:4px}
+.dbody.tight .dnote .when{margin-top:1px}
+.dfoot{flex-shrink:0;margin-top:auto;padding-top:12px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:flex-end}
 .dgap{display:inline-flex;align-items:baseline;gap:3px;font-size:13px;line-height:1;
   color:var(--soft);letter-spacing:.1em;white-space:nowrap}
 .dgap b{font-family:var(--mono);font-size:30px;line-height:1;color:var(--ink);letter-spacing:0;margin:0 2px}
@@ -2505,12 +2512,17 @@ function renderDossier(i, animate) {
 /* 原文字号自适应：放不下就逐级缩小 */
 function fitDossier() {
   const body = $("#dbody"), q = $("#dquote");
-  if (!body) return;
-  let size = 34; q.style.fontSize = size + "px";
-  while (body.scrollHeight > body.clientHeight && size > 15) {
-    size -= 1; q.style.fontSize = size + "px"; q.style.lineHeight = size > 20 ? 1.7 : 1.6;
+  if (!body || !q) return;
+  let size = 34, guard = 400;
+  q.style.fontSize = size + "px"; q.style.lineHeight = size > 20 ? 1.7 : 1.6;
+  /* 原文超出时先缩字号；到 15px 仍放不下就不再缩，交给原文区内部滚动 */
+  while (q.scrollHeight > q.clientHeight && size > 15 && guard-- > 0) {
+    size -= 1;
+    q.style.fontSize = size + "px";
+    q.style.lineHeight = size > 20 ? 1.7 : 1.6;
   }
 }
+
 const scaleSlot = () => { const w = $("#slot").parentElement.clientWidth; $("#slot").style.zoom = w ? Math.min(1, w / 540) : 1; };
 addEventListener("resize", scaleSlot);
 renderChrome();
@@ -3899,10 +3911,8 @@ const PERSONA = (function () {
 const SYNC_CACHE_KEY = "desk-sync-cache-v1";
 const SYNC_CACHE_TTL = 24 * 60 * 60 * 1000;
 const SYNC_GAP_MS = 120;                 // 每个网关请求之间的间隔，降低被限流的概率
-const SYNC_RETRY_CODES = new Set(["-202"]);   // -202 视为可重试（网关繁忙/限流）
 const ERR_HINT = {
   "-2013": "API Key 无效或已过期",
-  "-202": "微信读书暂时限制访问，已自动重试",
   "-2012": "请求参数不被接受",
   "-2014": "接口暂时不可用",
 };
@@ -3943,21 +3953,41 @@ const hostReady = (async function detectHost() {
     }
   } catch (e) {}
 })();
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let nextRequestAt = 0, cooldownUntil = 0;
   const pad = n => String(n).padStart(2, "0");
   const ymOf = t => { const d = new Date(t * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
   const ymdOf = t => { const d = new Date(t * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
   const ts = (y, m, d = 15) => Math.floor(new Date(y, m - 1, d, 12).getTime() / 1000);
   const shortAuthor = a => (a || "").split(" ")[0];
-  async function pmap(arr, n, fn) {          // 最多 n 个请求同时进行
-    const out = new Array(arr.length); let i = 0;
-    await Promise.all(Array.from({ length: Math.min(n, arr.length) }, async () => {
-      while (i < arr.length) { const k = i++; out[k] = await fn(arr[k], k); }
-    }));
-    return out;
-  }
-
   async function run(key, step, syncCache = null) {
+    const controller = new AbortController();
+    const { signal } = controller;
+    const sleep = ms => new Promise((resolve, reject) => {
+      signal.throwIfAborted();
+      const abort = () => { clearTimeout(timer); reject(signal.reason); };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, Math.min(Math.ceil(ms), 2147483647));
+      signal.addEventListener("abort", abort, { once: true });
+    });
+
+    async function pmap(arr, n, fn) {
+      const out = new Array(arr.length);
+      let i = 0;
+      await Promise.all(Array.from({ length: Math.min(n, arr.length) }, async () => {
+        try {
+          while (!signal.aborted && i < arr.length) {
+            const k = i++;
+            out[k] = await fn(arr[k], k);
+          }
+        } catch (error) {
+          controller.abort(error);
+        }
+      }));
+      signal.throwIfAborted();
+      return out;
+    }
     const previous = syncCache?.previous;
     const next = syncCache?.next;
     const startedAt = Date.now();
@@ -3978,40 +4008,69 @@ const hostReady = (async function detectHost() {
       next[type][id] = { signature, value: fresh, at: Date.now() };
       return fresh;
     }
-    let calls = 0;
+    let calls = 0, requestQueue = Promise.resolve();
+    function dispatch(body) {
+      let response;
+      const turn = requestQueue.then(async () => {
+        for (;;) {
+          signal.throwIfAborted();
+          const now = performance.now();
+          const delay = Math.max(nextRequestAt, cooldownUntil) - now;
+          if (delay <= 0) {
+            const headers = { "Content-Type": "application/json" };
+            if (key) headers.Authorization = "Bearer " + key;
+            nextRequestAt = performance.now() + SYNC_GAP_MS;
+            response = fetch(GW, { method: "POST", headers, body, signal });
+            return;   // 只串行安排发出时间，响应仍可并行等待
+          }
+          await sleep(delay);
+        }
+      });
+      requestQueue = turn.catch(() => {});
+      return turn.then(() => response);
+    }
+
+    function pauseGateway(response, attempt) {
+      const retryAfter = response.headers.get("retry-after");
+      const wait = retryAfter == null ? 0 : /^\d+$/.test(retryAfter)
+        ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+      const delay = Math.max(3000 * (attempt + 1), Number.isFinite(wait) ? wait : 0);
+      cooldownUntil = Math.max(cooldownUntil, performance.now() + delay);
+    }
+
     async function api(name, params = {}) {
-      let last;
-      for (let a = 0; a < 3; a++) {
+      const body = JSON.stringify({ api_name: name, skill_version: VER, ...params });
+      for (let a = 0; ; a++) {
         let r;
-        if (a > 0 || calls > 0) await sleep(SYNC_GAP_MS);
         try {
-          const headers = { "Content-Type": "application/json" };
-          if (key) headers.Authorization = "Bearer " + key;
-          r = await fetch(GW, { method: "POST", headers,
-            body: JSON.stringify({ api_name: name, skill_version: VER, ...params }) });
-        } catch (e) { throw new Error("网络连接失败，请稍后再试"); }
+          r = await dispatch(body);
+        } catch (e) {
+          signal.throwIfAborted();
+          throw new Error("网络连接失败，请稍后再试");
+        }
+        const rateLimited = r.status === 429;
+        if (rateLimited) pauseGateway(r, a);
         let d = null; try { d = await r.json(); } catch (e) {}
+        signal.throwIfAborted();
         calls++; step && step(calls);
         if (r.status === 401 || r.status === 403) throw new Error("API Key 无效或已过期");
-        if (d && d.errcode) {
-          const code = String(d.errcode);
+        const code = d?.errcode ? String(d.errcode) : "";
+        if (rateLimited || code === "-202") {
+          if (!rateLimited) pauseGateway(r, a);
+          if (a < 2) continue;
+          throw new Error("微信读书暂时限制访问，已自动重试（" + (code ? "errcode " + code : "HTTP 429") + " · " + name + "）");
+        }
+        if (code) {
           const hint = ERR_HINT[code] || d.errmsg || "接口返回错误";
-          const err = new Error(`${hint}（errcode ${code} · ${name}）`);
-          if (SYNC_RETRY_CODES.has(code) && a < 2) {
-            last = err;
-            await sleep(3000 * (a + 1));
-            continue;
-          }
-          throw err;
+          throw new Error(hint + "（errcode " + code + " · " + name + "）");
         }
         if (r.ok && d) {
           if (next && !isSyncRecord(d)) throw new Error("微信读书返回的数据格式有误，请重试");
           return d;
         }
-        last = new Error(`接口暂时不可用（${r.status}）`);
+        if (a >= 2) throw new Error("接口暂时不可用（" + r.status + " · " + name + "）");
         await sleep(1500 * (a + 1));
       }
-      throw last;
     }
     const now = new Date(), Y = now.getFullYear(), M = now.getMonth() + 1, MONTH = `${Y}-${pad(M)}`;
     const TODAY = `${MONTH}-${pad(now.getDate())}`;

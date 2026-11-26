@@ -607,6 +607,9 @@ async function proxyHandler(req, res) {
     body: Buffer.concat(chunks),
   })
   const bytes = Buffer.from(await upstream.arrayBuffer())
-  res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
+  const retryAfter = upstream.headers.get('retry-after')
+  if (upstream.status === 429 && retryAfter !== null) headers['retry-after'] = retryAfter
+  res.writeHead(upstream.status, headers)
   res.end(bytes)
 }
