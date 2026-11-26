@@ -4257,7 +4257,7 @@ const hostReady = (async function detectHost() {
       totals: { shelf: shelfTotal, finished: books.filter(b => b.finishReading).length, notes: noteTotal },
       plan, candidates, monthly, cats, heat, yearHeat, walls, years, yearDone,
       cards, highlights,
-      source: `微信读书 API · ${at} 拉取`, syncedAt: at, calls,
+      source: `微信读书 API · ${at} 拉取`, syncedAt: at, calls, syncMode,
     };
   }
   return { run, hostReady, readWereadConfig };
@@ -4269,7 +4269,10 @@ const hostReady = (async function detectHost() {
   const synced = live ? (D.syncedAt || ((D.source || "").match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/) || [])[1] || "") : "";
   const baseLabel = live ? `微信读书 · ${synced.slice(5)}` : "微信读书";
   let busy = false, t0 = 0, tick = 0, calls = 0, stepText = "", lastErr = "", local = null;
-  let syncMode = "未同步";   // local：本机 serve.py 是否可用
+  let syncMode = "未同步";
+  const lastMode = (() => {
+    try { const d = JSON.parse(localStorage.getItem("desk-data") || "null"); return d && d.syncMode || ""; } catch (e) { return ""; }
+  })();   // local：本机 serve.py 是否可用
   $("#dsrc").classList.toggle("live", live);
   $("#dsrcText").textContent = baseLabel;
   const saved = () => localStorage.getItem("desk-wrkey") || "";
@@ -4285,7 +4288,7 @@ const hostReady = (async function detectHost() {
     const sec = Math.round((Date.now() - t0) / 1000);
     const prog = stepText ? ` · ${stepText}` : calls ? ` · ${calls}` : "";
     $("#wrWhen").textContent = busy ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}${prog}`
-      : synced ? `上次同步 ${synced.slice(5)}` : "";
+      : synced ? `上次同步 ${synced.slice(5)}${lastMode ? " · " + lastMode : ""}` : "";
     if (HOST.mode) {
       $("#wrKey").placeholder = HOST.configured ? `已由插件保管（${HOST.masked}），更换请重新填写` : "填写微信读书 API Key";
       $("#wrForget").hidden = busy || !(HOST.configured || live);
