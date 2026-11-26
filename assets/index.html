@@ -4257,7 +4257,7 @@ const hostReady = (async function detectHost() {
       totals: { shelf: shelfTotal, finished: books.filter(b => b.finishReading).length, notes: noteTotal },
       plan, candidates, monthly, cats, heat, yearHeat, walls, years, yearDone,
       cards, highlights,
-      source: `微信读书 API · ${at} 拉取`, syncedAt: at, calls, syncMode,
+      source: `微信读书 API · ${at} 拉取`, syncedAt: at, calls,
     };
   }
   return { run, hostReady, readWereadConfig };
@@ -4309,6 +4309,7 @@ const hostReady = (async function detectHost() {
     return null;
   }
   function finish(data, cache = null) {
+    data.syncMode = syncMode;
     try { localStorage.setItem("desk-data", JSON.stringify(data)); }
     catch (e) { throw new Error("浏览器存储空间不够"); }
     if (cache) {
