@@ -492,8 +492,9 @@ body[data-theme="bookstore"]{--sheet:#efe6d2;--sheet-edge:#d9cfb9}
 .redo button{margin-top:6px;border:1px solid var(--ink);background:transparent;font-size:13px;letter-spacing:.2em;padding:5px 12px;cursor:pointer}
 .redo button:hover{background:var(--ink);color:var(--sheet)}
 .dfoot{margin-top:auto;padding-top:12px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:flex-end}
-.dgap{font-size:13px;color:var(--soft);letter-spacing:.1em}
-.dgap b{font-family:var(--mono);font-size:30px;color:var(--ink);letter-spacing:0;margin:0 4px}
+.dgap{display:inline-flex;align-items:baseline;gap:3px;font-size:13px;line-height:1;
+  color:var(--soft);letter-spacing:.1em;white-space:nowrap}
+.dgap b{font-family:var(--mono);font-size:30px;line-height:1;color:var(--ink);letter-spacing:0;margin:0 2px}
 .barcode svg{display:block;color:var(--ink)}
 .barcode span{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.2em;color:var(--soft);text-align:center;margin-top:3px}
 .stamp{position:absolute;z-index:4;pointer-events:none;color:var(--stamp);border:3px solid var(--stamp);border-radius:4px;font-weight:700;
