@@ -3897,6 +3897,14 @@ const PERSONA = (function () {
    ================================================================ */
 const SYNC_CACHE_KEY = "desk-sync-cache-v1";
 const SYNC_CACHE_TTL = 24 * 60 * 60 * 1000;
+const SYNC_GAP_MS = 120;                 // 每个网关请求之间的间隔，降低被限流的概率
+const SYNC_RETRY_CODES = new Set(["-202"]);   // -202 视为可重试（网关繁忙/限流）
+const ERR_HINT = {
+  "-2013": "API Key 无效或已过期",
+  "-202": "微信读书暂时限制访问，已自动重试",
+  "-2012": "请求参数不被接受",
+  "-2014": "接口暂时不可用",
+};
 const isSyncRecord = v => !!v && typeof v === "object" && !Array.isArray(v);
 
 const WEREAD = (function () {
@@ -3974,6 +3982,7 @@ const hostReady = (async function detectHost() {
       let last;
       for (let a = 0; a < 3; a++) {
         let r;
+        if (a > 0 || calls > 0) await sleep(SYNC_GAP_MS);
         try {
           const headers = { "Content-Type": "application/json" };
           if (key) headers.Authorization = "Bearer " + key;
@@ -3983,7 +3992,17 @@ const hostReady = (async function detectHost() {
         let d = null; try { d = await r.json(); } catch (e) {}
         calls++; step && step(calls);
         if (r.status === 401 || r.status === 403) throw new Error("API Key 无效或已过期");
-        if (d && d.errcode) throw new Error(d.errmsg || `接口错误 ${d.errcode}`);
+        if (d && d.errcode) {
+          const code = String(d.errcode);
+          const hint = ERR_HINT[code] || d.errmsg || "接口返回错误";
+          const err = new Error(`${hint}（errcode ${code} · ${name}）`);
+          if (SYNC_RETRY_CODES.has(code) && a < 2) {
+            last = err;
+            await sleep(3000 * (a + 1));
+            continue;
+          }
+          throw err;
+        }
         if (r.ok && d) {
           if (next && !isSyncRecord(d)) throw new Error("微信读书返回的数据格式有误，请重试");
           return d;
@@ -4063,7 +4082,7 @@ const hostReady = (async function detectHost() {
       readSecs[b.bookId] = p.readSecs;
       return p;
     };
-    const yearProgress = await pmap(thisYear, 4, getProg);
+    const yearProgress = await pmap(thisYear, 2, getProg);
     thisYear.forEach((b, i) => {
       const p = yearProgress[i], id = String(b.bookId);
       if (p.progress === 100 && p.finishTime) finishMonth[id] = ymOf(p.finishTime);
@@ -4132,7 +4151,7 @@ const hostReady = (async function detectHost() {
     const targets = [...new Set([...walls.flatMap(w => w.items.map(x => x.bookId)).filter(id => notebooks.has(id)),
       ...[...notebooks.keys()].slice(0, 12)])];
     const highlights = {};
-    await pmap(targets, 3, async bid => {
+    await pmap(targets, 2, async bid => {
       const notebook = notebooks.get(bid);
       const signature = JSON.stringify([notebook.sort, notebook.reviewCount, notebook.noteCount]);
       const { reviews, marks } = await cached("notes", bid, signature, async () => {
