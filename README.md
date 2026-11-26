@@ -37,6 +37,8 @@ dsh plugin add /path/to/dsh-reading-desk
 
 [![npm](https://img.shields.io/npm/v/dsh-reading-desk)](https://www.npmjs.com/package/dsh-reading-desk)
 
+同步由宿主执行，**切换面板或关闭面板都不会打断**；页面只负责显示进度并落盘。
+
 装完在侧栏点「读书台」图标。第一次只有内置的公开样张；要显示自己的数据，
 在面板里点「连接微信读书」填 Agent Gateway 的 `wrk-` Key 同步一次。
 
@@ -50,14 +52,16 @@ dsh plugin add /path/to/dsh-reading-desk
 
 ## 隐私
 
-- 微信读书 Key 与同步下来的数据**只存在你这台机器的浏览器里**（localStorage）
+- 微信读书 Key 由**插件宿主**保管（文件权限 0600），页面只拿到 `wrk-****1234` 这样的掩码
+- 同步跑在宿主进程里：切到别的面板、关掉标签页都不会中断；读到的新数据仍存在你这台机器的浏览器里（localStorage）
+- 增量缓存也在宿主磁盘（`~/.dsh/storages/dsh-reading-desk/sync-cache.json`），换 Key 会自动清除
 - 宿主只做转发：`/plugin/reading-desk/weread` 把只读请求原样转给微信读书网关，
   限 6 个只读接口、4KB 上限、校验 Origin，不落盘、不记日志
 - AI 请求只带书名、统计数字和对话内容，不带 Key
 
 ## 已知限制
 
-- 数据要手动同步一次；清了浏览器数据就得重同步
+- 数据要手动同步一次（之后是增量的，只拉有变化的书）；清了浏览器数据就得重同步
 - 内置 `assets/covers` 是样张封面，版权归微信读书与出版方，仅用于界面展示
 - 只在 `dsh 0.2.2-rc.1` 上验证过；更早版本没测
 - 在真实面板里的框高、明暗主题跟随还需要你实测
