@@ -1,6 +1,6 @@
 {
   "name": "dsh-reading-desk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "读书台 · 微信读书阅读计划、月历、划线回顾与月度策展，运行在 DeepSeek Harness 面板里",
   "main": "index.js",
