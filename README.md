@@ -1,86 +1,84 @@
-# 读书台 · dsh-reading-desk
+# Reading Desk · dsh-reading-desk
 
-微信读书的**阅读计划 / 月历 / 划线回顾 / 笔记 / 月度策展**，做成一个 DeepSeek Harness（`dsh`）插件，
-常驻在侧栏面板里。
+English | [中文](README.zh.md)
 
-> 插件包名、仓库名统一为 `dsh-reading-desk`。
+A DeepSeek Harness (`dsh`) plugin that puts **WeRead (微信读书) reading plans, a monthly calendar, highlight review, notes and a monthly exhibition** into a sidebar panel.
 
-![面板](docs/preview.png)
+![The panel](docs/preview.png)
 
-## 它解决什么
+## What it is for
 
-微信读书本身不帮你「安排读什么」，也不帮你「回头看一眼旧划线」。这个面板补这两件事：
+WeRead tells you what you have read. It does not help you decide what to read next, and it does not bring old highlights back. This panel covers both:
 
-| 页面 | 干什么 |
+| Page | What it does |
 |---|---|
-| 今日 | 今天该读哪几本、今天要回顾几条 |
-| 本月书单 | 搜书 → 用日期区间排进本月 → 看进度与时长；支持批量改期 |
-| 月度日历 | 每天读了哪几本、读了多少分钟；点某天看当天书目 |
-| 每日划线回顾 | 按 **FSRS** 排到期卡片，看原文 → 写一句 → 四档评分 |
-| 笔记 | 与 AI 讨论后留下的笔记，可选同步目标（本机 / Get 笔记 / flomo） |
-| 阅读性格 | 人格卡 + 五维 + 今年之最 + 营养表 + 心电图 + 历年，可导出 1080×1440 图片 |
-| 阅读展 | 月度策展海报：主题、封面带、本月精选（优先真实划线） |
-| 统计 | 五指标、全年热力图、分类分布、读书墙（按月/按年） |
+| Today | Which books are on for today, how many reviews are due |
+| Monthly plan | Search a book → schedule it onto a date range → see progress and hours; batch re-date or remove entries |
+| Monthly calendar | Which books you read each day and for how long; click a day for that day's list |
+| Highlight review | Cards scheduled with **FSRS**: read the original passage, write a line back, grade it in four steps |
+| Notes | Notes kept from discussions with the AI; optionally pushed to Get notes or flomo |
+| Reading persona | Personality card, five-axis radar, awards of the year, nutrient table, year curve, exportable 1080×1440 image |
+| Exhibition | A monthly curation poster: theme, cover strip, picks of the month (real highlights first) |
+| Statistics | Five metrics, full-year heatmap, category split, book walls by month and by year |
 
-## 安装
+## Install
 
 ```bash
-# 从 npm 安装
+# From npm
 dsh plugin add dsh-reading-desk
 
-# 或从 GitHub 安装
+# Or from GitHub
 dsh plugin add github:limowan/dsh-reading-desk
 
-# 或本地目录
+# Or from a local directory
 dsh plugin add /path/to/dsh-reading-desk
 ```
 
 [![npm](https://img.shields.io/npm/v/dsh-reading-desk)](https://www.npmjs.com/package/dsh-reading-desk)
 
-同步由宿主执行，**切换面板或关闭面板都不会打断**；页面只负责显示进度并落盘。
+Sync runs in the host process, so **switching or closing the panel does not interrupt it**; the page only shows progress and writes the finished dataset.
 
-装完在侧栏点「读书台」图标。第一次只有内置的公开样张；要显示自己的数据，
-在面板里点「连接微信读书」填 Agent Gateway 的 `wrk-` Key 同步一次。
+After installing, click the **Reading Desk** icon in the sidebar. The first launch only has built-in sample data (public books and popular highlights). To see your own numbers, open **Connect WeRead** in the panel and paste a `wrk-` Agent Gateway key once.
 
 ## AI
 
-阅读性格的吐槽、阅读展的策展主题、笔记整理、书内讨论，全部走宿主侧的 `ctx.llm.stream`：
+The persona one-liner, the exhibition theme, note summaries and in-book discussion all go through the host's `ctx.llm.stream`:
 
-- 用的是你 `dsh` 里已经配好的 provider / model（`ctx.agentDefaultModel.currentSelection()`）
-- **不需要再配一个 API Key**，也不产生额外计费通道
-- 模型不可用时自动退回本地文案，功能不中断
+- it uses the provider and model already configured in your `dsh` (`ctx.agentDefaultModel.currentSelection()`)
+- **no second API key** and no separate billing path
+- when the model is unavailable the panel falls back to local copy instead of breaking
 
-## 隐私
+## Privacy
 
-- 微信读书 Key 由**插件宿主**保管（文件权限 0600），页面只拿到 `wrk-****1234` 这样的掩码
-- 同步跑在宿主进程里：切到别的面板、关掉标签页都不会中断；读到的新数据仍存在你这台机器的浏览器里（localStorage）
-- 增量缓存也在宿主磁盘（`~/.dsh/storages/dsh-reading-desk/sync-cache.json`），换 Key 会自动清除
-- 宿主只做转发：`/plugin/reading-desk/weread` 把只读请求原样转给微信读书网关，
-  限 6 个只读接口、4KB 上限、校验 Origin，不落盘、不记日志
-- AI 请求只带书名、统计数字和对话内容，不带 Key
+- The WeRead key is held by the **plugin host** (file mode 0600); the page only receives a mask such as `wrk-****1234`
+- Sync runs in the host process: switching panels or closing the tab does not stop it; the resulting data still lives in your machine's browser (localStorage)
+- The incremental cache also lives on the host disk (`~/.dsh/storages/dsh-reading-desk/sync-cache.json`) and is cleared when the key changes
+- The host only proxies reads: `/plugin/reading-desk/weread` forwards read-only calls to the WeRead gateway, limited to six read-only endpoints, a 4 KB body cap and an origin check, with no disk writes and no logging
+- AI requests carry the book title, statistics and conversation text only — never the key
 
-## 已知限制
+## Known limitations
 
-- 数据要手动同步一次（之后是增量的，只拉有变化的书）；清了浏览器数据就得重同步
-- 内置 `assets/covers` 是样张封面，版权归微信读书与出版方，仅用于界面展示
-- 只在 `dsh 0.2.2-rc.1` 上验证过；更早版本没测
-- 在真实面板里的框高、明暗主题跟随还需要你实测
+- You sync once by hand; after that it is incremental (only changed books are refetched). Clearing browser storage means syncing again
+- The bundled `assets/covers` are sample covers, copyrighted by WeRead and their publishers, used for display only
+- Verified only on `dsh 0.2.2-rc.1`; earlier versions were not tested
+- Panel height and light/dark theme adaptation still deserve a look on your setup
 
-## 开发
+## Development
 
 ```bash
-# 改界面：直接编辑 assets/index.html（单文件，原型在 ../预览/）
-# 改宿主：编辑 index.js 后在插件管理里禁用再启用一次，或重启 dsh
+# UI: edit assets/index.html directly (single file; the prototype lives in ../预览/)
+# Host: edit index.js, then disable and re-enable the plugin, or restart dsh
 ```
 
-结构：
+Layout:
 
 ```
-index.js          宿主：托管 assets/ + 微信读书转发 + 4 条 AI 路由
-client.js         浏览器：侧栏图标 + main 面板（iframe 载入界面）
-assets/           界面本体（index.html / sample-data.js / covers/）
-locale/{zh,en}.json  插件标题与描述
-docs/DETAIL.md    插件详情页
+index.js            host: serves assets/ + WeRead proxy + AI routes + sync job
+sync-engine.mjs     host: the sync engine (port of the in-page version)
+client.js           browser: sidebar icon + main panel (iframe loads the UI)
+assets/             the UI (index.html / sample-data.js / covers/)
+locale/{zh,en}.json plugin title and description
+docs/DETAIL.md      plugin detail page
 ```
 
 ## License
