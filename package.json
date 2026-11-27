@@ -23,7 +23,8 @@
     "CHANGELOG.md",
     "VERSION",
     "assets/icon-180.png",
-    "sync-engine.mjs"
+    "sync-engine.mjs",
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": {
